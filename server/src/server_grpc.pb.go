@@ -4,7 +4,7 @@
 // - protoc             v3.12.4
 // source: server.proto
 
-package v1
+package appendEntry
 
 import (
 	context "context"
@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ServerService_AppendEntry_FullMethodName = "/server.ServerService/AppendEntry"
+	ServerService_AppendEntry_FullMethodName = "/appendEntry.ServerService/AppendEntry"
+	ServerService_RequestVote_FullMethodName = "/appendEntry.ServerService/RequestVote"
 )
 
 // ServerServiceClient is the client API for ServerService service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ServerServiceClient interface {
 	AppendEntry(ctx context.Context, in *AppendEntryMessage, opts ...grpc.CallOption) (*AppendEntryResponse, error)
+	RequestVote(ctx context.Context, in *RequestVoteMessage, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 }
 
 type serverServiceClient struct {
@@ -47,11 +49,22 @@ func (c *serverServiceClient) AppendEntry(ctx context.Context, in *AppendEntryMe
 	return out, nil
 }
 
+func (c *serverServiceClient) RequestVote(ctx context.Context, in *RequestVoteMessage, opts ...grpc.CallOption) (*RequestVoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestVoteResponse)
+	err := c.cc.Invoke(ctx, ServerService_RequestVote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ServerServiceServer is the server API for ServerService service.
 // All implementations must embed UnimplementedServerServiceServer
 // for forward compatibility.
 type ServerServiceServer interface {
 	AppendEntry(context.Context, *AppendEntryMessage) (*AppendEntryResponse, error)
+	RequestVote(context.Context, *RequestVoteMessage) (*RequestVoteResponse, error)
 	mustEmbedUnimplementedServerServiceServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedServerServiceServer struct{}
 
 func (UnimplementedServerServiceServer) AppendEntry(context.Context, *AppendEntryMessage) (*AppendEntryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AppendEntry not implemented")
+}
+func (UnimplementedServerServiceServer) RequestVote(context.Context, *RequestVoteMessage) (*RequestVoteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
 }
 func (UnimplementedServerServiceServer) mustEmbedUnimplementedServerServiceServer() {}
 func (UnimplementedServerServiceServer) testEmbeddedByValue()                       {}
@@ -104,16 +120,38 @@ func _ServerService_AppendEntry_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ServerService_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestVoteMessage)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ServerServiceServer).RequestVote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ServerService_RequestVote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ServerServiceServer).RequestVote(ctx, req.(*RequestVoteMessage))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ServerService_ServiceDesc is the grpc.ServiceDesc for ServerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ServerService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "server.ServerService",
+	ServiceName: "appendEntry.ServerService",
 	HandlerType: (*ServerServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "AppendEntry",
 			Handler:    _ServerService_AppendEntry_Handler,
+		},
+		{
+			MethodName: "RequestVote",
+			Handler:    _ServerService_RequestVote_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
