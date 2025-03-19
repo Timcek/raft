@@ -29,6 +29,7 @@ message LogEntry {
 message AppendEntryResponse {
   int64 term = 1;
   bool success = 2;
+  int64 matchIndex = 3;
 }
 
 message RequestVoteMessage {

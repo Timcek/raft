@@ -44,10 +44,10 @@ type Server struct {
 	inElection bool
 
 	// Locks needed for concurrent vote request and heartbeat sending
-	electionMutex         sync.Mutex
-	heartbeatMutex        sync.Mutex
-	clientRequestMutex    sync.Mutex
-	issueAppendEntryMutex sync.Mutex
+	electionMutex                   sync.Mutex
+	heartbeatMutex                  sync.Mutex
+	clientRequestMutex              sync.Mutex
+	processAppendEntryResponseMutex sync.Mutex
 
 	//TODO tole je vse potrebno pri replikaciji sporočil ne pri volitvah.
 	//volatile state on every server
@@ -233,7 +233,7 @@ func (server *Server) stopHeartbeat() {
 }
 
 func (server *Server) resetHeartbeat() {
-	// This function is different then in election timeout, because the election timout is first set when the server is
+	// This function is different from the election timeout, because the election timout is first set when the server is
 	// started but the heartbeat timeout is first set when the server becomes the leader for the first time
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
@@ -327,8 +327,15 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		return server.receivedValidHeartbeat(), nil
 	} else {
 		server.writeToFile("Received append entry\n")
+		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
+		// which means that this should be the first entry in log
 		return server.receivedValidAppendEntry(in.Entry), nil
 	}
+	return &sgrpc.AppendEntryResponse{
+		Term:       int64(server.currentTerm),
+		Success:    false,
+		MatchIndex: int64(len(server.log)),
+	}, nil
 }
 
 func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *sgrpc.AppendEntryResponse {
@@ -359,8 +366,9 @@ func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry) *sgr
 		Msg:   newLogEntry.Message,
 	})
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: true,
+		Term:       int64(server.currentTerm),
+		Success:    true,
+		MatchIndex: int64(len(server.log)),
 	}
 }
 
@@ -485,12 +493,14 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.log = append(server.log, newLog)
 	// Increase the number of logs replicated on this server
 	server.matchIndex[0]++
-	server.issueAppendEntries()
+	server.resetHeartbeat()
+	server.sendAppendEntries()
+	server.writeToFile("konec")
 	server.clientRequestMutex.Unlock()
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
 }
 
-func (server *Server) issueAppendEntries() {
+func (server *Server) sendAppendEntries() {
 	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(len(server.log) - 1)
 	logLengthWhenIssuingAppendEntries := len(server.log)
 	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
@@ -506,35 +516,27 @@ func (server *Server) issueAppendEntries() {
 		},
 		LeaderCommit: int64(server.commitIndex),
 	}
+	//TODO tole ti ne zaklene zares, ker  če se sprožita dva ClientRequesta sočasno, potem ta mutex velja za vsakega
+	// posebej, kar pa ni uredu, saj se bosta lahko posalala dva appendEntry sporočila istočasno na strežnik
+	var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
-		go func() {
-			conn, err := grpc.NewClient(address, grpc.WithInsecure())
-			if err != nil {
-				panic(err)
-			}
-			defer conn.Close()
-			grpcClient := sgrpc.NewServerServiceClient(conn)
-			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-			defer cancel()
-
-			appendEntryResponse, err := grpcClient.AppendEntry(contextServer, &appendEntryMessage)
-			if err != nil {
-				fmt.Println(err)
-			} else {
-				server.issueAppendEntryMutex.Lock()
-				server.processAppendEntryResponse(appendEntryResponse, index, logLengthWhenIssuingAppendEntries)
-				server.issueAppendEntryMutex.Unlock()
-			}
-		}()
+		// If the number of log entries on the current server is for one bigger than the other server,
+		// then we can send append entries, otherwise they will be sent with heartbeats
+		if server.matchIndex[index+1] == logLengthWhenIssuingAppendEntries-1 {
+			wg.Add(1)
+			server.sendAppendEntryMessage(address, appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
+		}
 	}
+	// We wait for all the AppendEntry messages to return, only then we allow new AppendEntry to be sent.
+	wg.Wait()
 }
 
 func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthWhenIssuingAppendEntries int) {
 	// Add 1, because the first index is reserved for the current server.
-	if appendEntryResponse.Success {
-		server.matchIndex[serverIndex+1]++
+	if appendEntryResponse.Success && server.matchIndex[serverIndex+1] < int(appendEntryResponse.MatchIndex) {
+		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
+		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
 	}
-	server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
 }
 
 func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries int) {
@@ -555,8 +557,70 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 
 func (server *Server) commitAllPreviousEntries(startIndex int) {
 	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
-	for !server.log[startIndex].Commited {
+	for startIndex >= 0 && !server.log[startIndex].Commited {
 		server.log[startIndex].Commited = true
 		startIndex--
 	}
+}
+
+// Messages sending
+
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup) {
+	go func() {
+		if waitGroup != nil {
+			defer waitGroup.Done()
+		}
+		conn, err := grpc.NewClient(address, grpc.WithInsecure())
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		grpcClient := sgrpc.NewServerServiceClient(conn)
+
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		defer cancel()
+
+		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, &heartbeatMessage)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			server.heartbeatMutex.Lock()
+			server.processHeartbeatResponse(heartbeatResponse)
+			server.heartbeatMutex.Unlock()
+		}
+	}()
+}
+
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse) {
+	if response.Success == false && int(response.Term) > server.currentTerm {
+		server.becomeCandidate()
+		server.changeTerm(int(response.Term), false)
+	}
+}
+
+func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage sgrpc.AppendEntryMessage, index int, logLengthWhenIssuingAppendEntries int, waitGroup *sync.WaitGroup) {
+	go func() {
+		if waitGroup != nil {
+			defer waitGroup.Done()
+		}
+		conn, err := grpc.NewClient(address, grpc.WithInsecure())
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+		grpcClient := sgrpc.NewServerServiceClient(conn)
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		defer cancel()
+
+		appendEntryResponse, err := grpcClient.AppendEntry(contextServer, &appendEntryMessage)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			//TODO Te mutexte bomo lahko še malo spremenil ko bom delal povečevanje matchIndex za več kot 1
+			server.processAppendEntryResponseMutex.Lock()
+			server.processAppendEntryResponse(appendEntryResponse, index, logLengthWhenIssuingAppendEntries)
+			server.processAppendEntryResponseMutex.Unlock()
+		}
+	}()
 }
