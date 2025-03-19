@@ -9,3 +9,6 @@ To kill a server use:
 
 To run the cluster just use the following command in raft folder:
     go run main.go
+
+To watch a log file use the following command:
+watch -n 1 -d tail output127.0.0.1\:<server_port>.txt

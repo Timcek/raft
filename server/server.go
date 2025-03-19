@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 	"raft/log"
-	pb "raft/server/src"
+	sgrpc "raft/server/src"
 	"sync"
 	"time"
 )
@@ -21,7 +21,7 @@ const CANDIDATE = 3
 const electionTimeoutTime = 16000
 
 type Server struct {
-	pb.UnimplementedServerServiceServer
+	sgrpc.UnimplementedServerServiceServer
 	currentTerm int
 	// Tells us if this server already voted in currentTerm
 	votedInThisTerm bool
@@ -44,8 +44,10 @@ type Server struct {
 	inElection bool
 
 	// Locks needed for concurrent vote request and heartbeat sending
-	electionMutex  sync.Mutex
-	heartbeatMutex sync.Mutex
+	electionMutex         sync.Mutex
+	heartbeatMutex        sync.Mutex
+	clientRequestMutex    sync.Mutex
+	issueAppendEntryMutex sync.Mutex
 
 	//TODO tole je vse potrebno pri replikaciji sporočil ne pri volitvah.
 	//volatile state on every server
@@ -56,7 +58,7 @@ type Server struct {
 	//volatile state on leader
 	nextIndex []int
 
-	//TODO tole tudi nevem zakaj točno se rabi
+	// Index 0 is reserved for current server and each of the other indexes is reserved for servers specified in serverAddresses
 	matchIndex []int
 
 	// Opened file for writing all the messages on the server. This enables us to easier keep track of what is going on in servers.
@@ -76,6 +78,7 @@ func CreateServer(address string, addresses []string) {
 	server.serverAddress = address
 	server.serverAddresses = addresses
 	server.createElectionTimer()
+	server.matchIndex = make([]int, len(server.serverAddresses)+1)
 
 	file, err := os.Create("output" + address + ".txt")
 	defer file.Close()
@@ -87,7 +90,7 @@ func CreateServer(address string, addresses []string) {
 
 	// Register grpc methods
 	grpcServer := grpc.NewServer()
-	pb.RegisterServerServiceServer(grpcServer, &server)
+	sgrpc.RegisterServerServiceServer(grpcServer, &server)
 	// odpremo vtičnico
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -155,20 +158,20 @@ func (server *Server) resetVoteCountAndVoteForYourself() {
 func (server *Server) issueVoteRequestsToOtherServers() {
 	for _, address := range server.serverAddresses {
 		go func() {
-			conn, err := grpc.NewClient(address, grpc.WithInsecure()) // Replace with your server address
+			conn, err := grpc.NewClient(address, grpc.WithInsecure())
 			if err != nil {
 				//TODO tole ni uredu naj nebo panic
 				panic(err)
 			}
 			defer conn.Close()
 
-			grpcClient := pb.NewServerServiceClient(conn)
+			grpcClient := sgrpc.NewServerServiceClient(conn)
 
 			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
 			defer cancel()
 
 			lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-			requestVote := pb.RequestVoteMessage{
+			requestVote := sgrpc.RequestVoteMessage{
 				Term:         int64(server.currentTerm),
 				LastLogTerm:  lastLogTerm,
 				LastLogIndex: lastLogIndex,
@@ -183,7 +186,7 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 	}
 }
 
-func (server *Server) processVoteResult(message *pb.RequestVoteResponse) {
+func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
 	if !server.inElection {
 		return
 	}
@@ -240,27 +243,28 @@ func (server *Server) resetHeartbeat() {
 }
 
 func (server *Server) heartbeatTimeout() {
+	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	for _, address := range server.serverAddresses {
 		go func() {
-			conn, err := grpc.NewClient(address, grpc.WithInsecure()) // Replace with your server address
+			conn, err := grpc.NewClient(address, grpc.WithInsecure())
 			if err != nil {
 				panic(err)
 			}
 			defer conn.Close()
 
-			grpcClient := pb.NewServerServiceClient(conn)
+			grpcClient := sgrpc.NewServerServiceClient(conn)
 
 			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
 			defer cancel()
 
 			//TODO tale log index potrebno popraviti ko bom delal log replication
 			lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-			heartbeatMessage := pb.AppendEntryMessage{
+			heartbeatMessage := sgrpc.AppendEntryMessage{
 				Term:          int64(server.currentTerm),
 				LeaderAddress: server.serverAddress,
 				PrevLogIndex:  lastLogIndex,
 				PrevLogTerm:   lastLogTerm,
-				Entries:       make([]*pb.LogEntry, 0),
+				Entry:         nil,
 				//TODO tale commit je potrebno narediti ko se bo dodajalo loge
 				LeaderCommit: int64(server.commitIndex),
 			}
@@ -276,7 +280,7 @@ func (server *Server) heartbeatTimeout() {
 	}
 }
 
-func (server *Server) processHeartbeatResponse(response *pb.AppendEntryResponse) {
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse) {
 	if response.Success == false && int(response.Term) > server.currentTerm {
 		server.becomeCandidate()
 		server.changeTerm(int(response.Term), false)
@@ -303,31 +307,32 @@ func (server *Server) becomeFollower(leaderAddress string) {
 func (server *Server) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
+	server.matchIndex = make([]int, len(server.serverAddresses)+1)
 	server.stopElectionTimer()
 	server.resetHeartbeat()
 }
 
 // Receive and respond to AppendEntry
 
-func (server *Server) AppendEntry(ctx context.Context, in *pb.AppendEntryMessage) (*pb.AppendEntryResponse, error) {
+func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
 	server.replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(int(in.Term), in.LeaderAddress)
 	// The term received in message is equal or higher than the currentTerm, so the server should become a follower
 	server.becomeFollower(in.LeaderAddress)
-	if len(in.Entries) == 0 {
-		server.writeToFile(time.Now().String() + " Received heartbeat, current term: " + fmt.Sprintf("%d", server.currentTerm) + "\n")
+	if in.Entry == nil {
+		server.writeToFile(time.Now().String() + " Received heartbeat, current term: " + fmt.Sprintf("%d", server.currentTerm) + " " + fmt.Sprintf("%v", server.log) + "\n")
 		// Heartbeat contains 0 log entries
 		return server.receivedValidHeartbeat(), nil
 	} else {
 		server.writeToFile("Received append entry\n")
-		return server.receivedValidAppendEntry(in.Entries), nil
+		return server.receivedValidAppendEntry(in.Entry), nil
 	}
 }
 
-func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *pb.AppendEntryResponse {
-	return &pb.AppendEntryResponse{
+func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *sgrpc.AppendEntryResponse {
+	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: false,
 	}
@@ -339,20 +344,21 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher
 	}
 }
 
-func (server *Server) receivedValidHeartbeat() *pb.AppendEntryResponse {
-	return &pb.AppendEntryResponse{
+func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
+	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
 	}
 }
 
-func (server *Server) receivedValidAppendEntry(newLog []*pb.LogEntry) *pb.AppendEntryResponse {
+func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry) *sgrpc.AppendEntryResponse {
 	server.resetElectionTimer()
-	for _, newLogEntry := range newLog {
-		//TODO tole boš moral pregledati ko bom delal log replication
-		server.log = append(server.log, log.Message{Term: int(newLogEntry.Term), Index: int(newLogEntry.Index), Msg: newLogEntry.Value})
-	}
-	return &pb.AppendEntryResponse{
+	server.log = append(server.log, log.Message{
+		Term:  int(newLogEntry.Term),
+		Index: int(newLogEntry.Index),
+		Msg:   newLogEntry.Message,
+	})
+	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
 	}
@@ -360,7 +366,7 @@ func (server *Server) receivedValidAppendEntry(newLog []*pb.LogEntry) *pb.Append
 
 // Receive and respond to vote request
 
-func (server *Server) RequestVote(ctx context.Context, in *pb.RequestVoteMessage) (*pb.RequestVoteResponse, error) {
+func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMessage) (*sgrpc.RequestVoteResponse, error) {
 	server.writeToFile("Received vote request\n")
 	server.replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(int(in.Term))
 
@@ -372,7 +378,7 @@ func (server *Server) RequestVote(ctx context.Context, in *pb.RequestVoteMessage
 
 	// Voters term is higher than candidates
 	if int(in.Term) < server.currentTerm {
-		return &pb.RequestVoteResponse{
+		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
 		}, nil
@@ -381,7 +387,7 @@ func (server *Server) RequestVote(ctx context.Context, in *pb.RequestVoteMessage
 	// Voters log is more up-to-date than the candidates log
 	//TODO tole še preglej ko boš delal log replication moraš spreminjati lastLogIndex in lastLogTerm
 	if int(in.LastLogTerm) < lastLog.Term || (int(in.LastLogTerm) == lastLog.Term && int(in.LastLogIndex) < lastLog.Index) {
-		return &pb.RequestVoteResponse{
+		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
 		}, nil
@@ -389,7 +395,7 @@ func (server *Server) RequestVote(ctx context.Context, in *pb.RequestVoteMessage
 
 	// Voter already voted in this term
 	if server.votedInThisTerm {
-		return &pb.RequestVoteResponse{
+		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
 		}, nil
@@ -399,7 +405,7 @@ func (server *Server) RequestVote(ctx context.Context, in *pb.RequestVoteMessage
 	server.resetElectionTimer()
 	server.becomeCandidate()
 	server.changeTerm(int(in.Term), true)
-	return &pb.RequestVoteResponse{
+	return &sgrpc.RequestVoteResponse{
 		Term:        int64(server.currentTerm),
 		VoteGranted: true,
 	}, nil
@@ -436,6 +442,21 @@ func (server *Server) retrieveLastLogIndexAndTerm() (int64, int64) {
 	return lastLogIndex, lastLogTerm
 }
 
+func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
+	var prevLogTerm int64
+	var prevLogIndex int64
+	if logIndex == 0 {
+		// If the servers log is empty we can use 0 for last log term and index, because all servers have these two
+		// values set to 0 at the start, and they won't refuse the messages with these values
+		prevLogTerm = 0
+		prevLogIndex = 0
+	} else {
+		prevLogTerm = int64(server.log[logIndex-1].Term)
+		prevLogIndex = int64(server.log[logIndex-1].Index)
+	}
+	return prevLogIndex, prevLogTerm
+}
+
 // Writing to log file
 
 func (server *Server) writeToFile(writeString string) {
@@ -443,5 +464,99 @@ func (server *Server) writeToFile(writeString string) {
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
 		return
+	}
+}
+
+// Server log replication
+
+func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequestMessage) (*sgrpc.ClientRequestResponse, error) {
+	server.writeToFile("Received client request\n")
+
+	server.clientRequestMutex.Lock()
+	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
+	if int(lastLogTerm) != server.currentTerm {
+		lastLogIndex = 0
+	}
+	newLog := log.Message{
+		Term:  server.currentTerm,
+		Index: int(lastLogIndex) + 1,
+		Msg:   in.Message,
+	}
+	server.log = append(server.log, newLog)
+	// Increase the number of logs replicated on this server
+	server.matchIndex[0]++
+	server.issueAppendEntries()
+	server.clientRequestMutex.Unlock()
+	return &sgrpc.ClientRequestResponse{Success: true}, nil
+}
+
+func (server *Server) issueAppendEntries() {
+	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(len(server.log) - 1)
+	logLengthWhenIssuingAppendEntries := len(server.log)
+	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
+	appendEntryMessage := sgrpc.AppendEntryMessage{
+		Term:          int64(server.currentTerm),
+		LeaderAddress: server.serverAddress,
+		PrevLogIndex:  prevLogIndex,
+		PrevLogTerm:   prevLogTerm,
+		Entry: &sgrpc.LogEntry{
+			Term:    int64(lastLog.Term),
+			Index:   int64(lastLog.Index),
+			Message: lastLog.Msg,
+		},
+		LeaderCommit: int64(server.commitIndex),
+	}
+	for index, address := range server.serverAddresses {
+		go func() {
+			conn, err := grpc.NewClient(address, grpc.WithInsecure())
+			if err != nil {
+				panic(err)
+			}
+			defer conn.Close()
+			grpcClient := sgrpc.NewServerServiceClient(conn)
+			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+			defer cancel()
+
+			appendEntryResponse, err := grpcClient.AppendEntry(contextServer, &appendEntryMessage)
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				server.issueAppendEntryMutex.Lock()
+				server.processAppendEntryResponse(appendEntryResponse, index, logLengthWhenIssuingAppendEntries)
+				server.issueAppendEntryMutex.Unlock()
+			}
+		}()
+	}
+}
+
+func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthWhenIssuingAppendEntries int) {
+	// Add 1, because the first index is reserved for the current server.
+	if appendEntryResponse.Success {
+		server.matchIndex[serverIndex+1]++
+	}
+	server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
+}
+
+func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries int) {
+	if server.log[logLengthWhenIssuingAppendEntries-1].Commited {
+		return
+	}
+	numOfSuccessfulReplications := 0
+	for _, value := range server.matchIndex {
+		if value >= logLengthWhenIssuingAppendEntries {
+			numOfSuccessfulReplications++
+		}
+	}
+	if numOfSuccessfulReplications >= (len(server.matchIndex)+1)/2 {
+		server.log[logLengthWhenIssuingAppendEntries-1].Commited = true
+		server.commitAllPreviousEntries(logLengthWhenIssuingAppendEntries - 2)
+	}
+}
+
+func (server *Server) commitAllPreviousEntries(startIndex int) {
+	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
+	for !server.log[startIndex].Commited {
+		server.log[startIndex].Commited = true
+		startIndex--
 	}
 }
