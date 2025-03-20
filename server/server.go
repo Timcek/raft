@@ -220,7 +220,7 @@ func (server *Server) manageHeartbeat() {
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
-			server.heartbeatTimeout()
+			server.heartbeatTimeout(true)
 			server.resetHeartbeat()
 		}
 	}()
@@ -242,12 +242,13 @@ func (server *Server) resetHeartbeat() {
 	}
 }
 
-func (server *Server) heartbeatTimeout() {
+func (server *Server) heartbeatTimeout(sendAppendEntries bool) {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	for index, address := range server.serverAddresses {
-		if server.matchIndex[index+1] != server.matchIndex[0] {
-			prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(index)
+		if sendAppendEntries && server.matchIndex[index+1] != server.matchIndex[0] {
+			server.writeToFile("Sending AppendEntry\n")
+			prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.matchIndex[index+1])
 			message := sgrpc.AppendEntryMessage{
 				Term:          int64(server.currentTerm),
 				LeaderAddress: server.serverAddress,
@@ -260,7 +261,10 @@ func (server *Server) heartbeatTimeout() {
 				},
 				LeaderCommit: int64(server.commitIndex),
 			}
-			server.sendAppendEntryMessage(address, message, index, server.matchIndex[index+1], nil)
+			// serverLogLength represents the address server's log length after appending the message.
+			// This is the length for which the majority replication should be checked for.
+			serverLogLength := server.matchIndex[index+1] + 1
+			server.sendAppendEntryMessage(address, message, index, serverLogLength, nil)
 		} else {
 			message := sgrpc.AppendEntryMessage{
 				Term:          int64(server.currentTerm),
@@ -270,7 +274,7 @@ func (server *Server) heartbeatTimeout() {
 				Entry:         nil,
 				LeaderCommit: int64(server.commitIndex),
 			}
-			server.sendHeartbeatMessage(address, message, nil)
+			server.sendHeartbeatMessage(address, message, nil, index+1)
 		}
 	}
 }
@@ -296,7 +300,10 @@ func (server *Server) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
 	server.matchIndex = make([]int, len(server.serverAddresses)+1)
+	server.matchIndex[0] = len(server.log)
 	server.stopElectionTimer()
+	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
+	server.heartbeatTimeout(false)
 	server.resetHeartbeat()
 }
 
@@ -321,8 +328,8 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		return server.receivedValidAppendEntry(in.Entry), nil
 	}
 	return &sgrpc.AppendEntryResponse{
-		Term:       int64(server.currentTerm),
-		Success:    false,
+		Term:    int64(server.currentTerm),
+		Success: false,
 		MatchIndex: int64(len(server.log)),
 	}, nil
 }
@@ -344,6 +351,7 @@ func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
+		MatchIndex: int64(len(server.log)),
 	}
 }
 
@@ -524,7 +532,7 @@ func (server *Server) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup) {
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup, matchIndexPosition int) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
@@ -545,20 +553,24 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrp
 			fmt.Println(err)
 		} else {
 			server.heartbeatMutex.Lock()
-			server.processHeartbeatResponse(heartbeatResponse)
+			server.processHeartbeatResponse(heartbeatResponse, matchIndexPosition)
 			server.heartbeatMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse) {
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, matchIndexPosition int) {
 	if response.Success == false && int(response.Term) > server.currentTerm {
 		server.becomeCandidate()
 		server.changeTerm(int(response.Term), false)
+	} else if response.Success && int(response.MatchIndex) > server.matchIndex[matchIndexPosition] {
+		// Fix log length on matchIndexPosition if current leader has the wrong value (this usually happens after
+		// elections because we reset matchIndex array)
+		server.matchIndex[matchIndexPosition] = int(response.MatchIndex)
 	}
 }
 
-func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage sgrpc.AppendEntryMessage, index int, logLengthWhenIssuingAppendEntries int, waitGroup *sync.WaitGroup) {
+func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage sgrpc.AppendEntryMessage, index int, logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
@@ -578,37 +590,37 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 		} else {
 			//TODO Te mutexte bomo lahko še malo spremenil ko bom delal povečevanje matchIndex za več kot 1
 			server.processAppendEntryResponseMutex.Lock()
-			server.processAppendEntryResponse(appendEntryResponse, index, logLengthWhenIssuingAppendEntries)
+			server.processAppendEntryResponse(appendEntryResponse, index, logLengthToCheckForMajorityReplication)
 			server.processAppendEntryResponseMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthWhenIssuingAppendEntries int) {
+func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthToCheckForMajorityReplication int) {
 	// Add 1, because the first index is reserved for the current server.
-	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v", appendEntryResponse))
+	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
 	if appendEntryResponse.Success && server.matchIndex[serverIndex+1] < int(appendEntryResponse.MatchIndex) {
 		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
-		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
+		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	}
 	//TODO tukaj naj se naredi še nekaj če je AppendEntry response false, pazi na to da ko bom pošiljal predhodne zapise,
 	// da se ne bodo tej zahtevki kaj križali z katerimi drugimi, ki bi leteli na ta strežnik
 	//TODO tukaj potrebno narediti, da bo popravljal log za nazaj
 }
 
-func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries int) {
-	if server.log[logLengthWhenIssuingAppendEntries-1].Commited {
+func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication int) {
+	if server.log[logLengthToCheckForMajorityReplication-1].Commited {
 		return
 	}
 	numOfSuccessfulReplications := 0
 	for _, value := range server.matchIndex {
-		if value >= logLengthWhenIssuingAppendEntries {
+		if value >= logLengthToCheckForMajorityReplication {
 			numOfSuccessfulReplications++
 		}
 	}
 	if numOfSuccessfulReplications >= (len(server.matchIndex)+1)/2 {
-		server.log[logLengthWhenIssuingAppendEntries-1].Commited = true
-		server.commitAllPreviousEntries(logLengthWhenIssuingAppendEntries - 2)
+		server.log[logLengthToCheckForMajorityReplication-1].Commited = true
+		server.commitAllPreviousEntries(logLengthToCheckForMajorityReplication - 2)
 	}
 }
 
