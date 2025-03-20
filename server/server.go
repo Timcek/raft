@@ -245,23 +245,31 @@ func (server *Server) resetHeartbeat() {
 func (server *Server) heartbeatTimeout() {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	message := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
-		PrevLogIndex:  lastLogIndex,
-		PrevLogTerm:   lastLogTerm,
-		Entry:         nil,
-		LeaderCommit: int64(server.commitIndex),
-	}
 	for index, address := range server.serverAddresses {
-		if server.matchIndex[index] != server.matchIndex[0] {
-			message.Entry = &sgrpc.LogEntry{
-				Term:    int64(server.log[server.matchIndex[index]].Term),
-				Index:   int64(server.log[server.matchIndex[index]].Index),
-				Message: server.log[server.matchIndex[index]].Msg,
+		if server.matchIndex[index+1] != server.matchIndex[0] {
+			prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(index)
+			message := sgrpc.AppendEntryMessage{
+				Term:          int64(server.currentTerm),
+				LeaderAddress: server.serverAddress,
+				PrevLogIndex:  prevLogTerm,
+				PrevLogTerm:   prevLogIndex,
+				Entry: &sgrpc.LogEntry{
+					Term:    int64(server.log[server.matchIndex[index+1]].Term),
+					Index:   int64(server.log[server.matchIndex[index+1]].Index),
+					Message: server.log[server.matchIndex[index+1]].Msg,
+				},
+				LeaderCommit: int64(server.commitIndex),
 			}
-			server.sendAppendEntryMessage(address, message, index, server.matchIndex[index], nil)
+			server.sendAppendEntryMessage(address, message, index, server.matchIndex[index+1], nil)
 		} else {
+			message := sgrpc.AppendEntryMessage{
+				Term:          int64(server.currentTerm),
+				LeaderAddress: server.serverAddress,
+				PrevLogIndex:  lastLogIndex,
+				PrevLogTerm:   lastLogTerm,
+				Entry:         nil,
+				LeaderCommit: int64(server.commitIndex),
+			}
 			server.sendHeartbeatMessage(address, message, nil)
 		}
 	}
@@ -459,8 +467,10 @@ func (server *Server) writeToFile(writeString string) {
 // Server log replication
 
 func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequestMessage) (*sgrpc.ClientRequestResponse, error) {
+	if server.serverState != LEADER {
+		return &sgrpc.ClientRequestResponse{Success: false}, nil
+	}
 	server.writeToFile("Received client request\n")
-
 	server.clientRequestMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
@@ -510,40 +520,6 @@ func (server *Server) sendAppendEntries() {
 	}
 	// We wait for all the AppendEntry messages to return, only then we allow new AppendEntry to be sent.
 	wg.Wait()
-}
-
-func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthWhenIssuingAppendEntries int) {
-	// Add 1, because the first index is reserved for the current server.
-	if appendEntryResponse.Success && server.matchIndex[serverIndex+1] < int(appendEntryResponse.MatchIndex) {
-		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
-		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
-	}
-	//TODO tukaj naj se naredi še nekaj če je AppendEntry response false, pazi na to da ko bom pošiljal predhodne zapise,
-	// da se ne bodo tej zahtevki kaj križali z katerimi drugimi, ki bi leteli na ta strežnik
-}
-
-func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries int) {
-	if server.log[logLengthWhenIssuingAppendEntries-1].Commited {
-		return
-	}
-	numOfSuccessfulReplications := 0
-	for _, value := range server.matchIndex {
-		if value >= logLengthWhenIssuingAppendEntries {
-			numOfSuccessfulReplications++
-		}
-	}
-	if numOfSuccessfulReplications >= (len(server.matchIndex)+1)/2 {
-		server.log[logLengthWhenIssuingAppendEntries-1].Commited = true
-		server.commitAllPreviousEntries(logLengthWhenIssuingAppendEntries - 2)
-	}
-}
-
-func (server *Server) commitAllPreviousEntries(startIndex int) {
-	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
-	for startIndex >= 0 && !server.log[startIndex].Commited {
-		server.log[startIndex].Commited = true
-		startIndex--
-	}
 }
 
 // Messages sending
@@ -607,3 +583,41 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 		}
 	}()
 }
+
+func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthWhenIssuingAppendEntries int) {
+	// Add 1, because the first index is reserved for the current server.
+	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v", appendEntryResponse))
+	if appendEntryResponse.Success && server.matchIndex[serverIndex+1] < int(appendEntryResponse.MatchIndex) {
+		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
+		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries)
+	}
+	//TODO tukaj naj se naredi še nekaj če je AppendEntry response false, pazi na to da ko bom pošiljal predhodne zapise,
+	// da se ne bodo tej zahtevki kaj križali z katerimi drugimi, ki bi leteli na ta strežnik
+	//TODO tukaj potrebno narediti, da bo popravljal log za nazaj
+}
+
+func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthWhenIssuingAppendEntries int) {
+	if server.log[logLengthWhenIssuingAppendEntries-1].Commited {
+		return
+	}
+	numOfSuccessfulReplications := 0
+	for _, value := range server.matchIndex {
+		if value >= logLengthWhenIssuingAppendEntries {
+			numOfSuccessfulReplications++
+		}
+	}
+	if numOfSuccessfulReplications >= (len(server.matchIndex)+1)/2 {
+		server.log[logLengthWhenIssuingAppendEntries-1].Commited = true
+		server.commitAllPreviousEntries(logLengthWhenIssuingAppendEntries - 2)
+	}
+}
+
+func (server *Server) commitAllPreviousEntries(startIndex int) {
+	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
+	for startIndex >= 0 && !server.log[startIndex].Commited {
+		server.log[startIndex].Commited = true
+		startIndex--
+	}
+}
+
+//TODO narediti popravljanje matchIndex-a, ko je izvoljen nov leader
