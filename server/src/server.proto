@@ -15,7 +15,6 @@ message AppendEntryMessage {
   string leaderAddress = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
-  //TODO tole preglej
   LogEntry entry = 5;
   int64 leaderCommit = 6;
 }
