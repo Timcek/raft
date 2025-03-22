@@ -58,8 +58,7 @@ type Server struct {
 	//volatile state on leader
 	nextIndex []int
 
-	// Index 0 is reserved for current server and each of the other indexes is reserved for servers specified in serverAddresses
-	matchIndex []int
+	//TODO poglej si zakaj bi lahko potrebovali matchIndex
 
 	// Opened file for writing all the messages on the server. This enables us to easier keep track of what is going on in servers.
 	file *os.File
