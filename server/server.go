@@ -79,7 +79,6 @@ func CreateServer(address string, addresses []string) {
 	server.serverAddress = address
 	server.serverAddresses = addresses
 	server.createElectionTimer()
-	server.matchIndex = make([]int, len(server.serverAddresses)+1)
 
 	file, err := os.Create("output" + address + ".txt")
 	defer file.Close()
@@ -247,7 +246,6 @@ func (server *Server) heartbeatTimeout(sendAppendEntries bool) {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	server.writeToFile(fmt.Sprintf("Match index: %v\n", server.matchIndex))
 	var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
 		if server.nextIndex[index+1] != server.nextIndex[0] {
@@ -307,9 +305,7 @@ func (server *Server) becomeFollower(leaderAddress string) {
 func (server *Server) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
-	server.matchIndex = make([]int, len(server.serverAddresses)+1)
 	logLength := len(server.log)
-	server.matchIndex[0] = logLength
 	// Initialize nextIndex array to the length of the leaders log. If the replicated logs on other servers are not the
 	// same, they will get fixed with appendEntries and heartbeats
 	for index, _ := range server.nextIndex {
@@ -534,7 +530,8 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	}
 	server.appendToLog(&newLog)
 	// Increase the number of logs replicated on this server
-	server.matchIndex[0]++
+	server.nextIndex[0]++
+
 	server.resetHeartbeat()
 	server.sendAppendEntries()
 	server.writeToFile("konec")
@@ -564,7 +561,7 @@ func (server *Server) sendAppendEntries() {
 	for index, address := range server.serverAddresses {
 		// If the number of log entries on the current server is for one bigger than the other server,
 		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.matchIndex[index+1] == logLengthWhenIssuingAppendEntries-1 {
+		if server.nextIndex[index+1] == logLengthWhenIssuingAppendEntries-1 {
 			wg.Add(1)
 			server.sendAppendEntryMessage(address, &appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
 		}
@@ -603,11 +600,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrp
 }
 
 func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverArrayPosition int) {
-	if response.Success && int(response.MatchIndex) > server.matchIndex[serverArrayPosition] {
-		// Fix log length on serverArrayPosition if current leader has the wrong value (this usually happens after
-		// elections because we reset matchIndex array)
-		server.matchIndex[serverArrayPosition] = int(response.MatchIndex)
-	} else if !response.Success && int(response.Term) > server.currentTerm {
+	if !response.Success && int(response.Term) > server.currentTerm {
 		// We receive success false, because the other server has higher term tha this
 		server.becomeCandidate()
 		server.changeTerm(int(response.Term), false)
@@ -646,7 +639,6 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	// Add 1, because the first index is reserved for the current server.
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
 	if appendEntryResponse.Success && server.nextIndex[serverIndex+1] < server.nextIndex[0] {
-		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
 		server.nextIndex[serverIndex+1]++
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
@@ -655,7 +647,6 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.changeTerm(int(appendEntryResponse.Term), false)
 	} else if !appendEntryResponse.Success {
 		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
-		server.matchIndex[serverIndex+1] = int(appendEntryResponse.MatchIndex)
 		server.nextIndex[serverIndex+1]--
 	}
 }
@@ -665,12 +656,12 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 		return
 	}
 	numOfSuccessfulReplications := 0
-	for _, value := range server.matchIndex {
+	for _, value := range server.nextIndex {
 		if value >= logLengthToCheckForMajorityReplication {
 			numOfSuccessfulReplications++
 		}
 	}
-	if numOfSuccessfulReplications >= (len(server.matchIndex)+1)/2 {
+	if numOfSuccessfulReplications >= (len(server.nextIndex)+1)/2 {
 		server.log[logLengthToCheckForMajorityReplication-1].Commited = true
 		server.commitAllPreviousEntries(logLengthToCheckForMajorityReplication - 2)
 	}
@@ -684,7 +675,6 @@ func (server *Server) commitAllPreviousEntries(startIndex int) {
 	}
 }
 
-//TODO implementiraj popravljanje loga, če ima en server drugačen log kot drugi pa tej še niso potrjeni
 func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
 	server.log = append(server.log, log.Message{
 		Term:  int(newLogEntry.Term),
