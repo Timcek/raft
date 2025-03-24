@@ -74,7 +74,9 @@ func CreateServer(address string, addresses []string) {
 	server.votedInThisTerm = false
 	server.serverState = FOLLOWER
 
-	server.commitIndex = 0
+	// We initialize commit index to -1, because the server log is empty and there is zero commited entries (when the
+	// value is 0 this means that the first entry is commited)
+	server.commitIndex = -1
 
 	server.serverAddress = address
 	server.serverAddresses = addresses
@@ -274,7 +276,6 @@ func (server *Server) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup, a
 			Index:   int64(server.log[server.nextIndex[index+1]].Index),
 			Message: server.log[server.nextIndex[index+1]].Msg,
 		},
-		//TODO tale commit je potrebno narediti ko se bo dodajalo loge
 		LeaderCommit: int64(server.commitIndex),
 	}
 	// serverLogLength represents the address server's log length after appending the message.
@@ -291,8 +292,7 @@ func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm in
 		PrevLogIndex:  lastLogIndex,
 		PrevLogTerm:   lastLogTerm,
 		Entry:         nil,
-		//TODO tale commit je potrebno narediti ko se bo dodajalo loge
-		LeaderCommit: int64(server.commitIndex),
+		LeaderCommit:  int64(server.commitIndex),
 	}
 	server.sendHeartbeatMessage(address, &message, nil, index+1)
 }
@@ -345,13 +345,21 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 	if in.Entry == nil {
 		server.writeToFile(time.Now().String() + " Received heartbeat, current term: " + fmt.Sprintf("%d", server.currentTerm) + " " + fmt.Sprintf("%v", server.log) + "\n")
 
-		return server.checkTheReceivedHeartbeat(in)
+		return server.checkTheReceivedHeartbeat(in, int(in.LeaderCommit))
+	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entry.Term) &&
+		server.log[len(server.log)-1].Index == int(in.Entry.Index) {
+		// Received append entry with the same entry as the last log entry
+		return &sgrpc.AppendEntryResponse{
+			Term:       int64(server.currentTerm),
+			Success:    true,
+			MatchIndex: int64(len(server.log)),
+		}, nil
 	} else if (len(server.log) == 0 && int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
 		server.writeToFile("Received append entry \n" + fmt.Sprintf("%v", in))
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
-		return server.receivedValidAppendEntry(in.Entry), nil
+		return server.receivedValidAppendEntry(in.Entry, int(in.LeaderCommit)), nil
 	} else {
 		// Received AppendEntry does not fit on the end of the log. We start moving backwards towards the commited part
 		// of the log to find where the entry can be inserted. If we reach the commited part of the log before finding
@@ -359,9 +367,9 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		// find log entry that fits into our log. The worst case scenario is that we move back all the way to the
 		// commited part and have to replace all log entries after the commited part.
 		if in.PrevLogTerm == 0 && in.PrevLogIndex == 0 {
-			return server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in)
+			return server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in, int(in.LeaderCommit))
 		}
-		return server.findLogPositionAndInsertLogEntry(in)
+		return server.findLogPositionAndInsertLogEntry(in, int(in.LeaderCommit))
 	}
 }
 
@@ -378,12 +386,13 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher
 	}
 }
 
-func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
+func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	if in.PrevLogTerm != 0 && in.PrevLogIndex != 0 &&
 		(len(server.log) == 0 || (server.log[len(server.log)-1].Term != int(in.PrevLogTerm) &&
 			server.log[len(server.log)-1].Index != int(in.PrevLogIndex))) {
 		return server.receivedHeartbeatWithNewerLog(), nil
 	}
+	server.commitEntriesOnFollower(commitIndex)
 	return server.receivedValidHeartbeat(), nil
 }
 
@@ -404,9 +413,10 @@ func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
 	}
 }
 
-func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry) *sgrpc.AppendEntryResponse {
+func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry, commitIndex int) *sgrpc.AppendEntryResponse {
 	server.resetElectionTimer()
 	server.appendToLog(newLogEntry)
+	server.commitEntriesOnFollower(commitIndex)
 	return &sgrpc.AppendEntryResponse{
 		Term:       int64(server.currentTerm),
 		Success:    true,
@@ -414,9 +424,10 @@ func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry) *sgr
 	}
 }
 
-func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
+func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	server.log = server.log[:0]
 	server.appendToLog(in.Entry)
+	server.commitEntriesOnFollower(commitIndex)
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
@@ -424,7 +435,7 @@ func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgr
 	}, nil
 }
 
-func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
+func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	position := len(server.log) - 1
 	for position != -1 && !server.log[position].Commited {
 		if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
@@ -438,7 +449,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		}
 		position--
 	}
-
+	server.commitEntriesOnFollower(commitIndex)
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
 	// us previous log entries for us to fix our log.
 	return &sgrpc.AppendEntryResponse{
@@ -446,6 +457,18 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		Success:    false,
 		MatchIndex: int64(len(server.log)),
 	}, nil
+}
+
+func (server *Server) commitEntriesOnFollower(commitIndex int) {
+	if len(server.log) == 0 {
+		// There are no entries that could be commited
+		return
+	}
+	if len(server.log) <= commitIndex {
+		server.commitAllEntriesUpToCommitIndex(len(server.log) - 1)
+	} else {
+		server.commitAllEntriesUpToCommitIndex(commitIndex)
+	}
 }
 
 // Receive and respond to vote request
@@ -548,6 +571,15 @@ func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
 		Index: int(newLogEntry.Index),
 		Msg:   newLogEntry.Message,
 	})
+}
+
+func (server *Server) commitAllEntriesUpToCommitIndex(commitIndex int) {
+	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
+	server.commitIndex = commitIndex
+	for commitIndex >= 0 && !server.log[commitIndex].Commited {
+		server.log[commitIndex].Commited = true
+		commitIndex--
+	}
 }
 
 // Writing to log file
@@ -701,7 +733,8 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 }
 
 func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication int) {
-	if server.log[logLengthToCheckForMajorityReplication-1].Commited {
+	if server.log[logLengthToCheckForMajorityReplication-1].Commited ||
+		server.log[logLengthToCheckForMajorityReplication-1].Term != server.currentTerm {
 		return
 	}
 	numOfSuccessfulReplications := 0
@@ -711,17 +744,9 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 		}
 	}
 	if numOfSuccessfulReplications >= (len(server.nextIndex)+1)/2 {
-		server.log[logLengthToCheckForMajorityReplication-1].Commited = true
-		server.commitAllPreviousEntries(logLengthToCheckForMajorityReplication - 2)
+		server.commitAllEntriesUpToCommitIndex(logLengthToCheckForMajorityReplication - 1)
 	}
 }
 
-func (server *Server) commitAllPreviousEntries(startIndex int) {
-	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
-	for startIndex >= 0 && !server.log[startIndex].Commited {
-		server.log[startIndex].Commited = true
-		startIndex--
-	}
-}
-
-//TODO implement commiting on other servers
+//TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
+//TODO odstrani matchIndex
