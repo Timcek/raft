@@ -621,7 +621,7 @@ func (server *Server) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup, serverArrayPosition int) {
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup, serverArrayPosition int) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
