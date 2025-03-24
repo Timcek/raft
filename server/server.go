@@ -56,6 +56,7 @@ type Server struct {
 	//TODO tale lastApplied ni nujno potreben
 	lastApplied int
 	//volatile state on leader
+	// Index 0 is reserved for current server and each of the other indexes is reserved for servers specified in serverAddresses
 	nextIndex []int
 
 	//TODO poglej si zakaj bi lahko potrebovali matchIndex
@@ -78,6 +79,7 @@ func CreateServer(address string, addresses []string) {
 	server.serverAddress = address
 	server.serverAddresses = addresses
 	server.createElectionTimer()
+	server.nextIndex = make([]int, len(server.serverAddresses)+1)
 
 	file, err := os.Create("output" + address + ".txt")
 	defer file.Close()
@@ -248,7 +250,7 @@ func (server *Server) heartbeatTimeout(sendAppendEntries bool) {
 	var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
 		if server.nextIndex[index+1] != server.nextIndex[0] {
-			server.writeToFile("Sending AppendEntry\n")
+			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
 			prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[index+1])
 
 			message := sgrpc.AppendEntryMessage{
@@ -327,17 +329,16 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 	server.becomeFollower(in.LeaderAddress)
 	if in.Entry == nil {
 		server.writeToFile(time.Now().String() + " Received heartbeat, current term: " + fmt.Sprintf("%d", server.currentTerm) + " " + fmt.Sprintf("%v", server.log) + "\n")
-		position := len(server.log) - 1
-		for !server.log[position].Commited {
-			if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
-				// Heartbeat contains 0 log entries
-				return server.receivedValidHeartbeat(), nil
-			}
+
+		if in.PrevLogTerm != 0 && in.PrevLogIndex != 0 && (len(server.log) == 0 ||
+			server.log[len(server.log)-1].Term != int(in.PrevLogTerm) &&
+				server.log[len(server.log)-1].Index != int(in.PrevLogIndex)) {
+			return server.receivedHeartbeatWithNewerLog(), nil
 		}
-		return server.receivedHeartbeatWithNewerLog(), nil
-	} else if (int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
+		return server.receivedValidHeartbeat(), nil
+	} else if (len(server.log) == 0 && int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
-		server.writeToFile("Received append entry\n")
+		server.writeToFile("Received append entry \n" + fmt.Sprintf("%v", in))
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
 		return server.receivedValidAppendEntry(in.Entry), nil
@@ -347,8 +348,17 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		// the position we return success=false and the leader will keep on sending his previous log entries until we
 		// find log entry that fits into our log. The worst case scenario is that we move back all the way to the
 		// commited part and have to replace all log entries after the commited part.
+		if in.PrevLogTerm == 0 && in.PrevLogIndex == 0 {
+			server.log = server.log[:0]
+			server.appendToLog(in.Entry)
+			return &sgrpc.AppendEntryResponse{
+				Term:    int64(server.currentTerm),
+				Success: true,
+				MatchIndex: int64(len(server.log)),
+			}, nil
+		}
 		position := len(server.log) - 1
-		for !server.log[position].Commited {
+		for position != -1 && !server.log[position].Commited {
 			if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
 				server.log = server.log[:position+1]
 				server.appendToLog(in.Entry)
@@ -358,13 +368,14 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 					MatchIndex: int64(len(server.log)),
 				}, nil
 			}
+			position--
 		}
+		return &sgrpc.AppendEntryResponse{
+			Term:       int64(server.currentTerm),
+			Success:    false,
+			MatchIndex: int64(len(server.log)),
+		}, nil
 	}
-	return &sgrpc.AppendEntryResponse{
-		Term:       int64(server.currentTerm),
-		Success:    false,
-		MatchIndex: int64(len(server.log)),
-	}, nil
 }
 
 func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *sgrpc.AppendEntryResponse {
@@ -517,7 +528,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.writeToFile("Received client request\n")
 
 	server.logReplicationMutex.Lock()
-	server.writeToFile("začetek")
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
 		lastLogIndex = 0
@@ -533,7 +543,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 
 	server.resetHeartbeat()
 	server.sendAppendEntries()
-	server.writeToFile("konec")
 	server.logReplicationMutex.Unlock()
 
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
