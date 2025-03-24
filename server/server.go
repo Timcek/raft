@@ -223,7 +223,7 @@ func (server *Server) manageHeartbeat() {
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
-			server.heartbeatTimeout(true)
+			server.heartbeatTimeout()
 			server.resetHeartbeat()
 		}
 	}()
@@ -245,7 +245,7 @@ func (server *Server) resetHeartbeat() {
 	}
 }
 
-func (server *Server) heartbeatTimeout(sendAppendEntries bool) {
+func (server *Server) heartbeatTimeout() {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
@@ -320,7 +320,7 @@ func (server *Server) becomeLeader() {
 	server.initializeNextIndex()
 	server.stopElectionTimer()
 	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
-	server.heartbeatTimeout(false)
+	server.heartbeatTimeout()
 	server.resetHeartbeat()
 }
 
@@ -343,7 +343,7 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 	// The term received in message is equal or higher than the currentTerm, so the server should become a follower
 	server.becomeFollower(in.LeaderAddress)
 	if in.Entry == nil {
-		server.writeToFile(time.Now().String() + " Received heartbeat, current term: " + fmt.Sprintf("%d", server.currentTerm) + " " + fmt.Sprintf("%v", server.log) + "\n")
+		server.writeToFile(" Received heartbeat " + fmt.Sprintf("%v", server.log) + "\n")
 
 		return server.checkTheReceivedHeartbeat(in, int(in.LeaderCommit))
 	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entry.Term) &&
@@ -388,8 +388,9 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher
 
 func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	if in.PrevLogTerm != 0 && in.PrevLogIndex != 0 &&
-		(len(server.log) == 0 || (server.log[len(server.log)-1].Term != int(in.PrevLogTerm) &&
-			server.log[len(server.log)-1].Index != int(in.PrevLogIndex))) {
+		(len(server.log) == 0 ||
+			server.log[len(server.log)-1].Term != int(in.PrevLogTerm) ||
+			server.log[len(server.log)-1].Index != int(in.PrevLogIndex)) {
 		return server.receivedHeartbeatWithNewerLog(), nil
 	}
 	server.commitEntriesOnFollower(commitIndex)
