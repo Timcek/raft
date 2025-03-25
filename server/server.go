@@ -49,17 +49,12 @@ type Server struct {
 	logReplicationMutex             sync.Mutex
 	processAppendEntryResponseMutex sync.Mutex
 
-	//TODO tole je vse potrebno pri replikaciji sporočil ne pri volitvah.
 	//volatile state on every server
 	commitIndex int
 
-	//TODO tale lastApplied ni nujno potreben
-	lastApplied int
 	//volatile state on leader
 	// Index 0 is reserved for current server and each of the other indexes is reserved for servers specified in serverAddresses
 	nextIndex []int
-
-	//TODO poglej si zakaj bi lahko potrebovali matchIndex
 
 	// Opened file for writing all the messages on the server. This enables us to easier keep track of what is going on in servers.
 	file *os.File
@@ -163,7 +158,6 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 		go func() {
 			conn, err := grpc.NewClient(address, grpc.WithInsecure())
 			if err != nil {
-				//TODO tole ni uredu naj nebo panic
 				panic(err)
 			}
 			defer conn.Close()
@@ -401,8 +395,6 @@ func (server *Server) receivedHeartbeatWithNewerLog() *sgrpc.AppendEntryResponse
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: false,
-		//TODO tale match index nevem kaj naj bo točno
-		MatchIndex: int64(len(server.log)),
 	}
 }
 
@@ -432,7 +424,6 @@ func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgr
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
-		MatchIndex: int64(len(server.log)),
 	}, nil
 }
 
@@ -445,7 +436,6 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
 				Success: true,
-				MatchIndex: int64(len(server.log)),
 			}, nil
 		}
 		position--
@@ -568,9 +558,10 @@ func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
 
 func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
 	server.log = append(server.log, log.Message{
-		Term:  int(newLogEntry.Term),
-		Index: int(newLogEntry.Index),
-		Msg:   newLogEntry.Message,
+		Term:     int(newLogEntry.Term),
+		Index:    int(newLogEntry.Index),
+		Msg:      newLogEntry.Message,
+		Commited: false,
 	})
 }
 
@@ -750,4 +741,3 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 }
 
 //TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
-//TODO odstrani matchIndex
