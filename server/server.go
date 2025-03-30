@@ -7,8 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"raft/log"
-	sgrpc "raft/server/src"
+	"raftImplementation/raft/log"
+	sgrpc "raftImplementation/raft/server/src"
 	"sync"
 	"time"
 )
@@ -184,10 +184,11 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 }
 
 func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
+	server.electionMutex.Lock()
+	defer server.electionMutex.Unlock()
 	if !server.inElection {
 		return
 	}
-	server.electionMutex.Lock()
 	if message.VoteGranted {
 		server.voteCount++
 	} else {
@@ -198,7 +199,6 @@ func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
 		// This server won the elections
 		server.becomeLeader()
 	}
-	server.electionMutex.Unlock()
 }
 
 func (server *Server) receivesDeniedVote(term int) {
@@ -266,9 +266,10 @@ func (server *Server) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup, a
 		PrevLogIndex:  prevLogTerm,
 		PrevLogTerm:   prevLogIndex,
 		Entry: &sgrpc.LogEntry{
-			Term:    int64(server.log[server.nextIndex[index+1]].Term),
-			Index:   int64(server.log[server.nextIndex[index+1]].Index),
-			Message: server.log[server.nextIndex[index+1]].Msg,
+			Term:     int64(server.log[server.nextIndex[index+1]].Term),
+			Index:    int64(server.log[server.nextIndex[index+1]].Index),
+			Message:  server.log[server.nextIndex[index+1]].Msg,
+			Commited: server.log[server.nextIndex[index+1]].Commited,
 		},
 		LeaderCommit: int64(server.commitIndex),
 	}
@@ -334,25 +335,25 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
 	server.replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(int(in.Term))
-	// The term received in message is equal or higher than the currentTerm, so the server should become a follower
-	server.becomeFollower(in.LeaderAddress)
+
 	if in.Entry == nil {
 		server.writeToFile(" Received heartbeat " + fmt.Sprintf("%v", server.log) + "\n")
-
+		server.becomeFollower(in.LeaderAddress)
 		return server.checkTheReceivedHeartbeat(in, int(in.LeaderCommit))
 	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entry.Term) &&
 		server.log[len(server.log)-1].Index == int(in.Entry.Index) {
 		// Received append entry with the same entry as the last log entry
+		server.becomeFollower(in.LeaderAddress)
 		return &sgrpc.AppendEntryResponse{
-			Term:       int64(server.currentTerm),
-			Success:    true,
-			MatchIndex: int64(len(server.log)),
+			Term:    int64(server.currentTerm),
+			Success: true,
 		}, nil
 	} else if (len(server.log) == 0 && int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
 		server.writeToFile("Received append entry \n" + fmt.Sprintf("%v", in))
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
+		server.becomeFollower(in.LeaderAddress)
 		return server.receivedValidAppendEntry(in.Entry, int(in.LeaderCommit)), nil
 	} else {
 		// Received AppendEntry does not fit on the end of the log. We start moving backwards towards the commited part
@@ -400,9 +401,8 @@ func (server *Server) receivedHeartbeatWithNewerLog() *sgrpc.AppendEntryResponse
 
 func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
 	return &sgrpc.AppendEntryResponse{
-		Term:       int64(server.currentTerm),
-		Success:    true,
-		MatchIndex: int64(len(server.log)),
+		Term:    int64(server.currentTerm),
+		Success: true,
 	}
 }
 
@@ -411,28 +411,36 @@ func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry, comm
 	server.appendToLog(newLogEntry)
 	server.commitEntriesOnFollower(commitIndex)
 	return &sgrpc.AppendEntryResponse{
-		Term:       int64(server.currentTerm),
-		Success:    true,
-		MatchIndex: int64(len(server.log)),
+		Term:    int64(server.currentTerm),
+		Success: true,
 	}
 }
 
 func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
-	server.log = server.log[:0]
-	server.appendToLog(in.Entry)
-	server.commitEntriesOnFollower(commitIndex)
+	if !server.log[0].Commited {
+		server.becomeFollower(in.LeaderAddress)
+		server.log = server.log[:0]
+		server.appendToLog(in.Entry)
+		server.commitEntriesOnFollower(commitIndex)
+		return &sgrpc.AppendEntryResponse{
+			Term:    int64(server.currentTerm),
+			Success: true,
+		}, nil
+	}
+	server.electionTimeout()
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
-		Success: true,
+		Success: false,
 	}, nil
 }
 
 func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	position := len(server.log) - 1
 	for position != -1 && !server.log[position].Commited {
-		if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
-			server.log = server.log[:position+1]
+		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
+			server.log = server.log[:position]
 			server.appendToLog(in.Entry)
+			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
 				Success: true,
@@ -440,13 +448,22 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		}
 		position--
 	}
-	server.commitEntriesOnFollower(commitIndex)
+	if position != -1 && in.Entry.Commited && (server.log[position].Term > int(in.Entry.Term) ||
+		server.log[position].Term == int(in.Entry.Term) && server.log[position].Index > int(in.Entry.Index)) {
+		//We received append entry that is already in the commited part of the log (our log is newer)
+		server.electionTimeout()
+		return &sgrpc.AppendEntryResponse{
+			Term:    int64(server.currentTerm),
+			Success: false,
+		}, nil
+	}
+	//We received commited append entry that is not in our log
+	server.becomeFollower(in.LeaderAddress)
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
 	// us previous log entries for us to fix our log.
 	return &sgrpc.AppendEntryResponse{
-		Term:       int64(server.currentTerm),
-		Success:    false,
-		MatchIndex: int64(len(server.log)),
+		Term:    int64(server.currentTerm),
+		Success: false,
 	}, nil
 }
 

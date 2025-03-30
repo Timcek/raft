@@ -23,12 +23,12 @@ message LogEntry {
   int64 term = 1;
   int64 index = 2;
   string Message = 3;
+  bool Commited = 4;
 }
 
 message AppendEntryResponse {
   int64 term = 1;
   bool success = 2;
-  int64 matchIndex = 3;
 }
 
 message RequestVoteMessage {
