@@ -2,7 +2,7 @@ package main
 
 import (
 	"os"
-	"raft/server"
+	"raftImplementation/raft/server"
 	"strconv"
 )
 
