@@ -217,8 +217,8 @@ func (server *Server) manageHeartbeat() {
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
-			server.heartbeatTimeout()
 			server.resetHeartbeat()
+			server.heartbeatTimeout()
 		}
 	}()
 }
@@ -440,6 +440,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position]
 			server.appendToLog(in.Entry)
+			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
