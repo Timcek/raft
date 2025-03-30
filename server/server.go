@@ -507,10 +507,9 @@ func (server *Raft) findLogPositionAndInsertLogEntry(in *AppendEntryArgs, out *A
 			server.appendToLog(&in.Entry)
 			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
-			return &sgrpc.AppendEntryResponse{
-				Term:    int64(server.currentTerm),
-				Success: true,
-			}, nil
+			out.Term = server.currentTerm
+			out.Success = true
+			return
 		}
 		position--
 	}
