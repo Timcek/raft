@@ -1,27 +1,52 @@
-package server
+package raft
+
+//
+// this is an outline of the API that raft must expose to
+// the service (or tester). see comments below for
+// each of these functions for more details.
+//
+// rf = Make(...)
+//   create a new Raft server.
+// rf.Start(command interface{}) (index, term, isleader)
+//   start agreement on a new log entry
+// rf.GetState() (term, isLeader)
+//   ask a Raft for its current term, and whether it thinks it is leader
+// ApplyMsg
+//   each time a new entry is committed to the log, each Raft peer
+//   should send an ApplyMsg to the service (or tester)
+//   in the same server.
+//
 
 import (
-	"context"
 	"fmt"
-	"google.golang.org/grpc"
 	"math/rand"
-	"net"
 	"os"
 	"raftImplementation/raft/log"
 	sgrpc "raftImplementation/raft/server/src"
 	"sync"
 	"time"
 )
+import "raftImplementation/princeton/assignment3/src/labrpc"
 
+// import "bytes"
+// import "encoding/gob"
 const LEADER = 1
 const FOLLOWER = 2
 const CANDIDATE = 3
 
 // This means the number of milliseconds
-const electionTimeoutTime = 16000
+const electionTimeoutTime = 1000
 
-type Server struct {
+type Raft struct {
 	sgrpc.UnimplementedServerServiceServer
+
+	mu        sync.Mutex
+	peers     []*labrpc.ClientEnd
+	persister *Persister
+	applyCh   chan ApplyMsg
+
+	me int // index into peers[]
+
 	currentTerm int
 	// Tells us if this server already voted in currentTerm
 	votedInThisTerm bool
@@ -48,6 +73,7 @@ type Server struct {
 	heartbeatMutex                  sync.Mutex
 	logReplicationMutex             sync.Mutex
 	processAppendEntryResponseMutex sync.Mutex
+	writeToFileMutex                sync.Mutex
 
 	//volatile state on every server
 	commitIndex int
@@ -60,50 +86,92 @@ type Server struct {
 	file *os.File
 }
 
+// as each Raft peer becomes aware that successive log entries are
+// committed, the peer should send an ApplyMsg to the service (or
+// tester) on the same server, via the applyCh passed to Make().
+type ApplyMsg struct {
+	Index       int
+	Command     interface{}
+	UseSnapshot bool   // ignore for lab2; only used in lab3
+	Snapshot    []byte // ignore for lab2; only used in lab3
+}
+
+// example RequestVote RPC arguments structure.
+type AppendEntryArgs struct {
+	Term          int
+	LeaderAddress string
+	PrevLogIndex  int
+	PrevLogTerm   int
+	Entry         log.Message
+	LeaderCommit  int
+}
+
+// example RequestVote RPC reply structure.
+type AppendEntryReply struct {
+	Term    int
+	Success bool
+}
+
+type RequestVoteArgs struct {
+	Term         int
+	LastLogIndex int
+	LastLogTerm  int
+}
+
+// example RequestVote RPC reply structure.
+type RequestVoteReply struct {
+	Term        int
+	VoteGranted bool
+}
+
+type ClientRequestArgs struct {
+	Message interface{}
+}
+
+// example RequestVote RPC reply structure.
+type ClientRequestReply struct {
+	Success  bool
+	Position int
+}
+
 // Server constructor
 
-func CreateServer(address string, addresses []string) {
+func CreateServer(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// Create server with starting values
-	server := Server{}
+	server := Raft{}
+
+	server.peers = peers
+	server.persister = persister
+	server.me = me
+	server.applyCh = applyCh
+
 	server.currentTerm = 0
 	server.votedInThisTerm = false
 	server.serverState = FOLLOWER
 
+	go func() {
+		file, err := os.Create("output" + fmt.Sprintf("%v", server.me) + time.Now().String() + ".txt")
+		defer file.Close()
+		if err != nil {
+			fmt.Println("Error creating file:", err)
+			return
+		}
+		server.file = file
+		time.Sleep(10000 * time.Second)
+	}()
+
 	// We initialize commit index to -1, because the server log is empty and there is zero commited entries (when the
 	// value is 0 this means that the first entry is commited)
 	server.commitIndex = -1
-
-	server.serverAddress = address
-	server.serverAddresses = addresses
 	server.createElectionTimer()
-	server.nextIndex = make([]int, len(server.serverAddresses)+1)
+	server.nextIndex = make([]int, len(server.peers))
 
-	file, err := os.Create("output" + address + ".txt")
-	defer file.Close()
-	if err != nil {
-		fmt.Println("Error creating file:", err)
-		return
-	}
-	server.file = file
-
-	// Register grpc methods
-	grpcServer := grpc.NewServer()
-	sgrpc.RegisterServerServiceServer(grpcServer, &server)
-	// odpremo vtičnico
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		panic(err)
-	}
-	server.writeToFile("gRPC server listening at " + address + "\n")
-	// začnemo s streženjem
-	if err := grpcServer.Serve(listener); err != nil {
-		panic(err)
-	}
+	return &server
 }
 
 // Election timer management. When the timer triggers the election process starts.
 
-func (server *Server) createElectionTimer() {
+func (server *Raft) createElectionTimer() {
 	randomNum := rand.Intn(electionTimeoutTime/2) + electionTimeoutTime/2
 	server.electionTimer = time.NewTimer(time.Millisecond * time.Duration(randomNum))
 	go func() {
@@ -115,93 +183,91 @@ func (server *Server) createElectionTimer() {
 	}()
 }
 
-func (server *Server) resetElectionTimer() {
+func (server *Raft) resetElectionTimer() {
 	randomNum := rand.Intn(electionTimeoutTime/2) + electionTimeoutTime/2
 	server.electionTimer.Reset(time.Millisecond * time.Duration(randomNum))
 }
 
-func (server *Server) stopElectionTimer() {
+func (server *Raft) stopElectionTimer() {
 	if server.electionTimer != nil {
 		server.electionTimer.Stop()
 	}
 }
 
-func (server *Server) electionTimeout() {
+func (server *Raft) electionTimeout() {
 	server.becomeCandidate()
 	server.beginElection()
 }
 
 // Begin election process, send votes, wait for responses and change server state based on vote result.
 
-func (server *Server) beginElection() {
+func (server *Raft) beginElection() {
 	server.increaseTerm()
 	server.inElection = true
 	server.resetVoteCountAndVoteForYourself()
 	server.issueVoteRequestsToOtherServers()
 	server.resetElectionTimer()
-	server.writeToFile("Election began " + server.serverAddress + "\n")
+	server.writeToFile(time.Now().String() + " Election began " + fmt.Sprintf("%v\n", server.me))
 }
 
-func (server *Server) increaseTerm() {
+func (server *Raft) increaseTerm() {
 	server.currentTerm = server.currentTerm + 1
 	server.votedInThisTerm = false
 }
 
-func (server *Server) resetVoteCountAndVoteForYourself() {
+func (server *Raft) resetVoteCountAndVoteForYourself() {
 	// Resets vote count to 0 and votes for himself. The vote count at the end is 1.
 	server.voteCount = 1
 	server.votedInThisTerm = true
 }
 
-func (server *Server) issueVoteRequestsToOtherServers() {
-	for _, address := range server.serverAddresses {
+func (server *Raft) issueVoteRequestsToOtherServers() {
+	for index, _ := range server.peers {
+		if index == server.me {
+			continue
+		}
 		go func() {
-			conn, err := grpc.NewClient(address, grpc.WithInsecure())
-			if err != nil {
-				panic(err)
-			}
-			defer conn.Close()
-
-			grpcClient := sgrpc.NewServerServiceClient(conn)
-
-			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-			defer cancel()
-
 			lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-			requestVote := sgrpc.RequestVoteMessage{
-				Term:         int64(server.currentTerm),
+			requestVote := RequestVoteArgs{
+				Term:         server.currentTerm,
 				LastLogTerm:  lastLogTerm,
 				LastLogIndex: lastLogIndex,
 			}
-			voteResult, err := grpcClient.RequestVote(contextServer, &requestVote)
-			if err != nil {
-				fmt.Println(err)
+			voteResult := RequestVoteReply{}
+			ok := server.peers[index].Call("Raft.RequestVote", requestVote, &voteResult, 100)
+			if !ok {
+				server.writeToFile("Problem with sending vote requests\n")
 			} else {
-				server.processVoteResult(voteResult)
+				server.processVoteResult(&voteResult)
 			}
 		}()
 	}
 }
 
-func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
+func (server *Raft) processVoteResult(message *RequestVoteReply) {
+	server.writeToFile("Processing vote result")
 	server.electionMutex.Lock()
 	defer server.electionMutex.Unlock()
 	if !server.inElection {
+		server.writeToFile("Not in election")
 		return
 	}
 	if message.VoteGranted {
 		server.voteCount++
 	} else {
-		server.receivesDeniedVote(int(message.Term))
+		server.receivesDeniedVote(message.Term)
 	}
-	// We always use odd number of servers so if the number of votes is greater than serverAddresses/2 the majority has voted for this server to become a leader.
-	if server.voteCount > len(server.serverAddresses)/2 {
+	server.writeToFile(fmt.Sprintf("Vote count: %v\n", server.voteCount))
+	// We always use odd number sof servers so if the number of votes is greater than serverAddresses/2 the majority has
+	// voted for this server to become a leader.
+	// We add 1 so that the number is ceil rounded
+	if server.voteCount >= (len(server.peers)+1)/2 {
 		// This server won the elections
 		server.becomeLeader()
 	}
 }
 
-func (server *Server) receivesDeniedVote(term int) {
+func (server *Raft) receivesDeniedVote(term int) {
 	// if the term received in a message is higher than the server's current term we have to update it and stop elections.
 	if term > server.currentTerm {
 		server.changeTerm(term, false)
@@ -212,24 +278,24 @@ func (server *Server) receivesDeniedVote(term int) {
 
 // Leader heartbeat management
 
-func (server *Server) manageHeartbeat() {
+func (server *Raft) manageHeartbeat() {
 	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
-			server.heartbeatTimeout()
 			server.resetHeartbeat()
+			server.heartbeatTimeout()
 		}
 	}()
 }
 
-func (server *Server) stopHeartbeat() {
+func (server *Raft) stopHeartbeat() {
 	if server.heartbeatTimer != nil {
 		server.heartbeatTimer.Stop()
 	}
 }
 
-func (server *Server) resetHeartbeat() {
+func (server *Raft) resetHeartbeat() {
 	// This function is different from the election timeout, because the election timout is first set when the server is
 	// started but the heartbeat timeout is first set when the server becomes the leader for the first time
 	if server.heartbeatTimer == nil {
@@ -239,69 +305,73 @@ func (server *Server) resetHeartbeat() {
 	}
 }
 
-func (server *Server) heartbeatTimeout() {
-	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
+func (server *Raft) heartbeatTimeout() {
+	server.writeToFile(time.Now().String() + " Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	var wg sync.WaitGroup
-	for index, address := range server.serverAddresses {
-		if server.nextIndex[index+1] != server.nextIndex[0] {
+	for index, _ := range server.nextIndex {
+		server.writeToFile("tttttttttttttttttttttttt\n")
+		if index == server.me {
+			continue
+		}
+		if server.nextIndex[index] != server.nextIndex[server.me] {
+			server.writeToFile("Sending append entry from heartbeat\n")
 			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
-
-			server.prepareAndSendAppendEntry(index, &wg, address)
+			server.prepareAndSendAppendEntry(index, &wg)
+			server.writeToFile("-----------------------------llllllllllllllllllllll\n")
 		} else {
-			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
+			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, index)
 		}
 	}
 	wg.Wait()
 	server.logReplicationMutex.Unlock()
 }
 
-func (server *Server) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup, address string) {
-	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[index+1])
+func (server *Raft) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup) {
+	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[index])
 
-	message := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
-		PrevLogIndex:  prevLogTerm,
-		PrevLogTerm:   prevLogIndex,
-		Entry: &sgrpc.LogEntry{
-			Term:     int64(server.log[server.nextIndex[index+1]].Term),
-			Index:    int64(server.log[server.nextIndex[index+1]].Index),
-			Message:  server.log[server.nextIndex[index+1]].Msg,
-			Commited: server.log[server.nextIndex[index+1]].Commited,
+	message := AppendEntryArgs{
+		Term:         server.currentTerm,
+		PrevLogIndex: prevLogTerm,
+		PrevLogTerm:  prevLogIndex,
+		Entry: log.Message{
+			Term:     server.log[server.nextIndex[index]].Term,
+			Index:    server.log[server.nextIndex[index]].Index,
+			Msg:      server.log[server.nextIndex[index]].Msg,
+			Commited: server.log[server.nextIndex[index]].Commited,
 		},
-		LeaderCommit: int64(server.commitIndex),
+		LeaderCommit: server.commitIndex,
 	}
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
-	serverLogLength := server.nextIndex[index+1] + 1
+	serverLogLength := server.nextIndex[index] + 1
 	wg.Add(1)
-	server.sendAppendEntryMessage(address, &message, index, serverLogLength, wg)
+	server.sendAppendEntryMessage(message, index, serverLogLength, wg)
 }
 
-func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, index int) {
-	message := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
-		PrevLogIndex:  lastLogIndex,
-		PrevLogTerm:   lastLogTerm,
-		Entry:         nil,
-		LeaderCommit:  int64(server.commitIndex),
+func (server *Raft) prepareAndSendHeartbeat(lastLogIndex int, lastLogTerm int, serverIndex int) {
+	message := AppendEntryArgs{
+		Term:         server.currentTerm,
+		PrevLogIndex: lastLogIndex,
+		PrevLogTerm:  lastLogTerm,
+		Entry:        log.Message{},
+		LeaderCommit: server.commitIndex,
 	}
-	server.sendHeartbeatMessage(address, &message, nil, index+1)
+	server.sendHeartbeatMessage(message, serverIndex, nil)
 }
 
 // Change server state
 
-func (server *Server) becomeCandidate() {
+func (server *Raft) becomeCandidate() {
 	server.inElection = false
 	server.serverState = CANDIDATE
+	server.writeToFile(time.Now().String() + " stopping heartbeat\n")
 	server.stopHeartbeat()
 	server.resetElectionTimer()
 }
 
-func (server *Server) becomeFollower(leaderAddress string) {
+func (server *Raft) becomeFollower(leaderAddress string) {
 	server.inElection = false
 	server.serverState = FOLLOWER
 	server.stopHeartbeat()
@@ -309,17 +379,20 @@ func (server *Server) becomeFollower(leaderAddress string) {
 	server.leaderAddress = leaderAddress
 }
 
-func (server *Server) becomeLeader() {
+func (server *Raft) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
 	server.initializeNextIndex()
+	server.writeToFile("leader prvič\n")
 	server.stopElectionTimer()
+	server.writeToFile("leader drugič\n")
 	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
 	server.heartbeatTimeout()
+	server.writeToFile("leader tretjič\n")
 	server.resetHeartbeat()
 }
 
-func (server *Server) initializeNextIndex() {
+func (server *Raft) initializeNextIndex() {
 	logLength := len(server.log)
 	// Initialize nextIndex array to the length of the leaders log. If the replicated logs on other servers are not the
 	// same, they will get fixed with appendEntries and heartbeats
@@ -330,116 +403,109 @@ func (server *Server) initializeNextIndex() {
 
 // Receive and respond to AppendEntry
 
-func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
-	if int(in.Term) < server.currentTerm {
-		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
+func (server *Raft) AppendEntry(in AppendEntryArgs, out *AppendEntryReply) {
+	if in.Term < server.currentTerm {
+		server.receivesHeartbeatOrAppendEntryWithStaleTerm(out)
 	}
-	server.replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(int(in.Term))
+	server.replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(in.Term)
 
-	if in.Entry == nil {
-		server.writeToFile(" Received heartbeat " + fmt.Sprintf("%v", server.log) + "\n")
+	if in.Entry == (log.Message{}) {
+		server.writeToFile(time.Now().String() + " Received heartbeat " + fmt.Sprintf("%v", server.log) + "\n")
 		server.becomeFollower(in.LeaderAddress)
-		return server.checkTheReceivedHeartbeat(in, int(in.LeaderCommit))
+		server.checkTheReceivedHeartbeat(in, out, in.LeaderCommit)
 	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entry.Term) &&
-		server.log[len(server.log)-1].Index == int(in.Entry.Index) {
+		server.log[len(server.log)-1].Index == in.Entry.Index {
 		// Received append entry with the same entry as the last log entry
 		server.becomeFollower(in.LeaderAddress)
-		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: true,
-		}, nil
+		out.Term = server.currentTerm
+		out.Success = true
 	} else if (len(server.log) == 0 && int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
-		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
-		server.writeToFile("Received append entry \n" + fmt.Sprintf("%v", in))
+		(len(server.log) != 0 && (in.PrevLogTerm == server.log[len(server.log)-1].Term && in.PrevLogIndex == server.log[len(server.log)-1].Index)) {
+		server.writeToFile(time.Now().String() + " Received append entry " + fmt.Sprintf("%v\n", in))
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
 		server.becomeFollower(in.LeaderAddress)
-		return server.receivedValidAppendEntry(in.Entry, int(in.LeaderCommit)), nil
+		server.receivedValidAppendEntry(&in.Entry, out, in.LeaderCommit)
 	} else {
 		// Received AppendEntry does not fit on the end of the log. We start moving backwards towards the commited part
 		// of the log to find where the entry can be inserted. If we reach the commited part of the log before finding
 		// the position we return success=false and the leader will keep on sending his previous log entries until we
 		// find log entry that fits into our log. The worst case scenario is that we move back all the way to the
 		// commited part and have to replace all log entries after the commited part.
+		server.writeToFile(time.Now().String() + " Received append entry second " + fmt.Sprintf("%v\n", in))
 		if in.PrevLogTerm == 0 && in.PrevLogIndex == 0 {
-			return server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in, int(in.LeaderCommit))
+			server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(&in, out, in.LeaderCommit)
+			return
 		}
-		return server.findLogPositionAndInsertLogEntry(in, int(in.LeaderCommit))
+		server.findLogPositionAndInsertLogEntry(&in, out, in.LeaderCommit)
 	}
 }
 
-func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *sgrpc.AppendEntryResponse {
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
-	}
+func (server *Raft) receivesHeartbeatOrAppendEntryWithStaleTerm(out *AppendEntryReply) {
+	out.Term = server.currentTerm
+	out.Success = false
 }
 
-func (server *Server) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(term int) {
+func (server *Raft) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher(term int) {
 	if term > server.currentTerm {
 		server.changeTerm(term, false)
 	}
 }
 
-func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
+func (server *Raft) checkTheReceivedHeartbeat(in AppendEntryArgs, out *AppendEntryReply, commitIndex int) {
 	if in.PrevLogTerm != 0 && in.PrevLogIndex != 0 &&
 		(len(server.log) == 0 ||
-			server.log[len(server.log)-1].Term != int(in.PrevLogTerm) ||
-			server.log[len(server.log)-1].Index != int(in.PrevLogIndex)) {
-		return server.receivedHeartbeatWithNewerLog(), nil
+			server.log[len(server.log)-1].Term != in.PrevLogTerm ||
+			server.log[len(server.log)-1].Index != in.PrevLogIndex) {
+		server.receivedHeartbeatWithNewerLog(out)
+		return
 	}
 	server.commitEntriesOnFollower(commitIndex)
-	return server.receivedValidHeartbeat(), nil
+	server.receivedValidHeartbeat(out)
 }
 
-func (server *Server) receivedHeartbeatWithNewerLog() *sgrpc.AppendEntryResponse {
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
-	}
+func (server *Raft) receivedHeartbeatWithNewerLog(out *AppendEntryReply) {
+	out.Term = server.currentTerm
+	out.Success = false
 }
 
-func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: true,
-	}
+func (server *Raft) receivedValidHeartbeat(out *AppendEntryReply) {
+	out.Term = server.currentTerm
+	out.Success = true
 }
 
-func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry, commitIndex int) *sgrpc.AppendEntryResponse {
+func (server *Raft) receivedValidAppendEntry(newLogEntry *log.Message, out *AppendEntryReply, commitIndex int) {
 	server.resetElectionTimer()
 	server.appendToLog(newLogEntry)
 	server.commitEntriesOnFollower(commitIndex)
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: true,
-	}
+	out.Term = server.currentTerm
+	out.Success = true
 }
 
-func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
+func (server *Raft) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *AppendEntryArgs, out *AppendEntryReply, commitIndex int) {
+	out.Term = server.currentTerm
 	if !server.log[0].Commited {
 		server.becomeFollower(in.LeaderAddress)
+		server.writeToFile("receivedFirstLogEntryButCurrentServerLogIsNotEmpty\n")
 		server.log = server.log[:0]
-		server.appendToLog(in.Entry)
+		server.appendToLog(&in.Entry)
 		server.commitEntriesOnFollower(commitIndex)
-		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: true,
-		}, nil
+		out.Success = true
+		return
 	}
 	server.electionTimeout()
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
-	}, nil
+	// We send back true, because if we send back false it will cause an error, since it will lower next index to -1
+	out.Success = true
 }
 
-func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
+func (server *Raft) findLogPositionAndInsertLogEntry(in *AppendEntryArgs, out *AppendEntryReply, commitIndex int) {
 	position := len(server.log) - 1
 	for position != -1 && !server.log[position].Commited {
-		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
+		if server.log[position-1].Term == in.PrevLogTerm && server.log[position-1].Index == in.PrevLogIndex {
+			server.writeToFile("findLogPositionAndInsertLogEntry\n")
 			server.log = server.log[:position]
-			server.appendToLog(in.Entry)
+			server.appendToLog(&in.Entry)
+			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
@@ -448,26 +514,23 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		}
 		position--
 	}
-	if position != -1 && in.Entry.Commited && (server.log[position].Term > int(in.Entry.Term) ||
-		server.log[position].Term == int(in.Entry.Term) && server.log[position].Index > int(in.Entry.Index)) {
+	if position != -1 && in.Entry.Commited && (server.log[position].Term > in.Entry.Term ||
+		server.log[position].Term == in.Entry.Term && server.log[position].Index > in.Entry.Index) {
 		//We received append entry that is already in the commited part of the log (our log is newer)
+		out.Term = server.currentTerm
+		out.Success = false
 		server.electionTimeout()
-		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: false,
-		}, nil
+		return
 	}
 	//We received commited append entry that is not in our log
 	server.becomeFollower(in.LeaderAddress)
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
 	// us previous log entries for us to fix our log.
-	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
-	}, nil
+	out.Term = server.currentTerm
+	out.Success = false
 }
 
-func (server *Server) commitEntriesOnFollower(commitIndex int) {
+func (server *Raft) commitEntriesOnFollower(commitIndex int) {
 	if len(server.log) == 0 {
 		// There are no entries that could be commited
 		return
@@ -481,51 +544,54 @@ func (server *Server) commitEntriesOnFollower(commitIndex int) {
 
 // Receive and respond to vote request
 
-func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMessage) (*sgrpc.RequestVoteResponse, error) {
-	server.writeToFile("Received vote request\n")
-	server.replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(int(in.Term))
-
+func (server *Raft) RequestVote(in RequestVoteArgs, out *RequestVoteReply) {
+	server.writeToFile(time.Now().String() + " Received vote request\n")
+	server.replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(in.Term)
+	server.writeToFile(fmt.Sprintf("%v\n", server.log))
 	// Retrieve servers last log message (if the log is empty, the term and index should be 0, which they are by default when we create logMessage)
 	var lastLog log.Message
 	if len(server.log) > 0 {
+		server.writeToFile(time.Now().String() + " prvi " + fmt.Sprintf("%v\n", len(server.log)))
 		lastLog = server.log[len(server.log)-1]
 	}
+	server.writeToFile(fmt.Sprintf("current term: %v\n", server.currentTerm))
+	server.writeToFile(fmt.Sprintf("%v\n", in))
+	server.writeToFile(fmt.Sprintf("%v\n", lastLog))
 
 	// Voters term is higher than candidates
-	if int(in.Term) < server.currentTerm {
-		return &sgrpc.RequestVoteResponse{
-			Term:        int64(server.currentTerm),
-			VoteGranted: false,
-		}, nil
+	if in.Term < server.currentTerm {
+		server.writeToFile(time.Now().String() + " drug\n")
+		out.Term = server.currentTerm
+		out.VoteGranted = false
+		return
 	}
 
 	// Voters log is more up-to-date than the candidates log
-	if int(in.LastLogTerm) < lastLog.Term || (int(in.LastLogTerm) == lastLog.Term && int(in.LastLogIndex) < lastLog.Index) {
-		return &sgrpc.RequestVoteResponse{
-			Term:        int64(server.currentTerm),
-			VoteGranted: false,
-		}, nil
+	if in.LastLogTerm < lastLog.Term || (in.LastLogTerm == lastLog.Term && in.LastLogIndex < lastLog.Index) {
+		server.writeToFile(time.Now().String() + " tretji\n")
+		out.Term = server.currentTerm
+		out.VoteGranted = false
+		return
 	}
 
 	// Voter already voted in this term
 	if server.votedInThisTerm {
-		return &sgrpc.RequestVoteResponse{
-			Term:        int64(server.currentTerm),
-			VoteGranted: false,
-		}, nil
+		server.writeToFile(time.Now().String() + " cetrti\n")
+		out.Term = server.currentTerm
+		out.VoteGranted = false
+		return
 	}
-
+	server.writeToFile(time.Now().String() + " peti\n")
 	//Voter votes for the candidate
 	server.resetElectionTimer()
 	server.becomeCandidate()
-	server.changeTerm(int(in.Term), true)
-	return &sgrpc.RequestVoteResponse{
-		Term:        int64(server.currentTerm),
-		VoteGranted: true,
-	}, nil
+	server.changeTerm(in.Term, true)
+	out.Term = server.currentTerm
+	out.VoteGranted = true
+	return
 }
 
-func (server *Server) replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(term int) {
+func (server *Raft) replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(term int) {
 	if term > server.currentTerm {
 		server.becomeCandidate()
 		server.changeTerm(term, false)
@@ -534,66 +600,80 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigh
 
 // Change term
 
-func (server *Server) changeTerm(term int, votedInThisTerm bool) {
+func (server *Raft) changeTerm(term int, votedInThisTerm bool) {
 	server.currentTerm = term
 	server.votedInThisTerm = votedInThisTerm
 }
 
 // Retrieve log info
 
-func (server *Server) retrieveLastLogIndexAndTerm() (int64, int64) {
-	var lastLogTerm int64
-	var lastLogIndex int64
+func (server *Raft) retrieveLastLogIndexAndTerm() (int, int) {
+	var lastLogTerm int
+	var lastLogIndex int
 	if len(server.log) == 0 {
 		// If the servers log is empty we can use 0 for last log term and index, because all servers have these two
 		// values set to 0 at the start, and they won't refuse the messages with these values
 		lastLogTerm = 0
 		lastLogIndex = 0
 	} else {
-		lastLogTerm = int64(server.log[len(server.log)-1].Term)
-		lastLogIndex = int64(server.log[len(server.log)-1].Index)
+		lastLogTerm = server.log[len(server.log)-1].Term
+		lastLogIndex = server.log[len(server.log)-1].Index
 	}
 	return lastLogIndex, lastLogTerm
 }
 
-func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
-	var prevLogTerm int64
-	var prevLogIndex int64
+func (server *Raft) retrievePrevLogIndexAndTerm(logIndex int) (int, int) {
+	var prevLogTerm int
+	var prevLogIndex int
 	if logIndex == 0 {
 		// If the servers log is empty we can use 0 for last log term and index, because all servers have these two
 		// values set to 0 at the start, and they won't refuse the messages with these values
 		prevLogTerm = 0
 		prevLogIndex = 0
 	} else {
-		prevLogTerm = int64(server.log[logIndex-1].Term)
-		prevLogIndex = int64(server.log[logIndex-1].Index)
+		prevLogTerm = server.log[logIndex-1].Term
+		prevLogIndex = server.log[logIndex-1].Index
 	}
 	return prevLogIndex, prevLogTerm
 }
 
 // Server log management
 
-func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
-	server.log = append(server.log, log.Message{
-		Term:     int(newLogEntry.Term),
-		Index:    int(newLogEntry.Index),
-		Msg:      newLogEntry.Message,
-		Commited: false,
-	})
+func (server *Raft) appendToLog(newLogEntry *log.Message) {
+	newLogEntry.Commited = false
+	server.log = append(server.log, *newLogEntry)
 }
 
-func (server *Server) commitAllEntriesUpToCommitIndex(commitIndex int) {
+func (server *Raft) commitAllEntriesUpToCommitIndex(commitIndex int) {
+	server.writeToFile("Commiting entries\n")
 	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
 	server.commitIndex = commitIndex
 	for commitIndex >= 0 && !server.log[commitIndex].Commited {
 		server.log[commitIndex].Commited = true
 		commitIndex--
 	}
+	//We increase the index, since it is pointing on entry that was already previously commited
+	commitIndex++
+	if commitIndex < 0 {
+		commitIndex = 0
+	}
+	for commitIndex < len(server.log) && server.log[commitIndex].Commited {
+		server.writeToFile("comitted index " + fmt.Sprintf("%v, ", commitIndex))
+		applyMsg := ApplyMsg{
+			Index:   commitIndex,
+			Command: server.log[commitIndex].Msg,
+		}
+		server.applyCh <- applyMsg
+		commitIndex++
+	}
+	server.writeToFile("\n")
 }
 
 // Writing to log file
 
-func (server *Server) writeToFile(writeString string) {
+func (server *Raft) writeToFile(writeString string) {
+	server.writeToFileMutex.Lock()
+	defer server.writeToFileMutex.Unlock()
 	_, err := server.file.WriteString(writeString)
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
@@ -603,57 +683,67 @@ func (server *Server) writeToFile(writeString string) {
 
 // Server log replication
 
-func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequestMessage) (*sgrpc.ClientRequestResponse, error) {
+func (server *Raft) ClientRequest(in ClientRequestArgs, out *ClientRequestReply) {
 	if server.serverState != LEADER {
-		return &sgrpc.ClientRequestResponse{Success: false}, nil
+		fmt.Println("I am not a leader " + fmt.Sprintf("%v", server.me))
+		out.Success = false
+		out.Position = -1
+		return
 	}
 	server.writeToFile("Received client request\n")
 
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	if int(lastLogTerm) != server.currentTerm {
+	if lastLogTerm != server.currentTerm {
 		lastLogIndex = 0
 	}
-	newLog := sgrpc.LogEntry{
-		Term:    int64(server.currentTerm),
-		Index:   int64(lastLogIndex) + 1,
-		Message: in.Message,
+	newLog := log.Message{
+		Term:  server.currentTerm,
+		Index: lastLogIndex + 1,
+		Msg:   in.Message,
 	}
 	server.appendToLog(&newLog)
 	// Increase the number of logs replicated on this server
-	server.nextIndex[0]++
+	server.nextIndex[server.me]++
 
 	server.resetHeartbeat()
+	server.writeToFile("Sending append entry form client request\n")
+	fmt.Println("ooooooooooooooouuuuiiiii")
 	server.sendAppendEntries()
+	fmt.Println("I am the leaderrrrrrrrrrrrrrrrrrrrrr " + fmt.Sprintf("%v", server.me))
+	out.Position = len(server.log) - 1
+	out.Success = true
 	server.logReplicationMutex.Unlock()
 
-	return &sgrpc.ClientRequestResponse{Success: true}, nil
+	return
 }
 
-func (server *Server) sendAppendEntries() {
+func (server *Raft) sendAppendEntries() {
 	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(len(server.log) - 1)
 	logLengthWhenIssuingAppendEntries := len(server.log)
 	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
-	appendEntryMessage := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
-		PrevLogIndex:  prevLogIndex,
-		PrevLogTerm:   prevLogTerm,
-		Entry: &sgrpc.LogEntry{
-			Term:    int64(lastLog.Term),
-			Index:   int64(lastLog.Index),
-			Message: lastLog.Msg,
+	appendEntryMessage := AppendEntryArgs{
+		Term:         server.currentTerm,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entry: log.Message{
+			Term:  lastLog.Term,
+			Index: lastLog.Index,
+			Msg:   lastLog.Msg,
 		},
-		LeaderCommit: int64(server.commitIndex),
+		LeaderCommit: server.commitIndex,
 	}
 
 	var wg sync.WaitGroup
-	for index, address := range server.serverAddresses {
+	for index, _ := range server.nextIndex {
+		if index == server.me {
+			continue
+		}
 		// If the number of log entries on the current server is for one bigger than the other server,
 		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.nextIndex[index+1] == logLengthWhenIssuingAppendEntries-1 {
+		if server.nextIndex[index] == logLengthWhenIssuingAppendEntries-1 {
 			wg.Add(1)
-			server.sendAppendEntryMessage(address, &appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
+			server.sendAppendEntryMessage(appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
 		}
 	}
 	// We wait for all the AppendEntry messages to return, only then we allow new AppendEntry to be sent.
@@ -662,86 +752,83 @@ func (server *Server) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup, serverArrayPosition int) {
+func (server *Raft) sendHeartbeatMessage(heartbeatMessage AppendEntryArgs, serverIndex int, waitGroup *sync.WaitGroup) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
 		}
-		conn, err := grpc.NewClient(address, grpc.WithInsecure())
-		if err != nil {
-			panic(err)
-		}
-		defer conn.Close()
-
-		grpcClient := sgrpc.NewServerServiceClient(conn)
-
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-		defer cancel()
-
-		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
-		if err != nil {
-			fmt.Println(err)
+		start := time.Now()
+		heartbeatResponse := AppendEntryReply{}
+		ok := server.peers[serverIndex].Call("Raft.AppendEntry", heartbeatMessage, &heartbeatResponse, 100)
+		elapsed := time.Since(start)
+		server.writeToFile("Function took " + fmt.Sprintf("%v\n", elapsed))
+		if !ok {
+			server.writeToFileMutex.Lock()
+			server.writeToFile("Problem with heartbeat\n")
+			server.writeToFileMutex.Unlock()
 		} else {
+			server.writeToFile("Successfully sent heartbeat\n")
+			server.writeToFile(fmt.Sprintf("%v\n", server.nextIndex))
 			server.heartbeatMutex.Lock()
-			server.processHeartbeatResponse(heartbeatResponse, serverArrayPosition)
+			server.processHeartbeatResponse(&heartbeatResponse, serverIndex)
 			server.heartbeatMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverArrayPosition int) {
-	if !response.Success && int(response.Term) > server.currentTerm {
+func (server *Raft) processHeartbeatResponse(response *AppendEntryReply, serverArrayPosition int) {
+	if !response.Success && response.Term > server.currentTerm {
 		// We receive success false, because the other server has higher term tha this
 		server.becomeCandidate()
-		server.changeTerm(int(response.Term), false)
+		server.changeTerm(response.Term, false)
 	} else if !response.Success {
 		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverArrayPosition]--
 	}
 }
 
-func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage *sgrpc.AppendEntryMessage, index int, logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
+func (server *Raft) sendAppendEntryMessage(appendEntryMessage AppendEntryArgs, serverIndex int, logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
 		}
-		conn, err := grpc.NewClient(address, grpc.WithInsecure())
-		if err != nil {
-			panic(err)
-		}
-		defer conn.Close()
-		grpcClient := sgrpc.NewServerServiceClient(conn)
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-		defer cancel()
 
-		appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
-		if err != nil {
-			fmt.Println(err)
+		server.writeToFile("starting")
+		appendEntryResponse := AppendEntryReply{}
+		ok := server.peers[serverIndex].Call("Raft.AppendEntry", appendEntryMessage, &appendEntryResponse, 100)
+		server.writeToFile("ending")
+
+		if !ok {
+			server.writeToFileMutex.Lock()
+			server.writeToFile("Problem with sending Append Entry")
+			server.writeToFileMutex.Unlock()
 		} else {
 			server.processAppendEntryResponseMutex.Lock()
-			server.processAppendEntryResponse(appendEntryResponse, index, logLengthToCheckForMajorityReplication)
+			server.processAppendEntryResponse(&appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication)
 			server.processAppendEntryResponseMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthToCheckForMajorityReplication int) {
+func (server *Raft) processAppendEntryResponse(appendEntryResponse *AppendEntryReply, serverIndex int, logLengthToCheckForMajorityReplication int) {
 	// Add 1, because the first index is reserved for the current server.
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
-	if appendEntryResponse.Success && server.nextIndex[serverIndex+1] < server.nextIndex[0] {
-		server.nextIndex[serverIndex+1]++
+	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.me] {
+		server.nextIndex[serverIndex]++
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
-	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
+	} else if !appendEntryResponse.Success && appendEntryResponse.Term > server.currentTerm {
 		// We receive success=false, because the other server has higher term
+		server.writeToFile(time.Now().String() + " Append entry prvič\n")
 		server.becomeCandidate()
-		server.changeTerm(int(appendEntryResponse.Term), false)
+		server.changeTerm(appendEntryResponse.Term, false)
 	} else if !appendEntryResponse.Success {
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
-		server.nextIndex[serverIndex+1]--
+		server.writeToFile(time.Now().String() + " Append entry drugič\n")
+		server.nextIndex[serverIndex]--
 	}
 }
 
-func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication int) {
+func (server *Raft) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication int) {
 	if server.log[logLengthToCheckForMajorityReplication-1].Commited ||
 		server.log[logLengthToCheckForMajorityReplication-1].Term != server.currentTerm {
 		return
@@ -758,3 +845,122 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 }
 
 //TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
+
+// return currentTerm and whether this server
+// believes it is the leader.
+func (rf *Raft) GetState() (int, bool) {
+	term := rf.currentTerm
+	isLeader := rf.serverState == LEADER
+	// Your code here.
+	return term, isLeader
+}
+
+// save Raft's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
+func (rf *Raft) persist() {
+	// Your code here.
+	// Example:
+	// w := new(bytes.Buffer)
+	// e := gob.NewEncoder(w)
+	// e.Encode(rf.xxx)
+	// e.Encode(rf.yyy)
+	// data := w.Bytes()
+	// rf.persister.SaveRaftState(data)
+}
+
+// restore previously persisted state.
+func (rf *Raft) readPersist(data []byte) {
+	// Your code here.
+	// Example:
+	// r := bytes.NewBuffer(data)
+	// d := gob.NewDecoder(r)
+	// d.Decode(&rf.xxx)
+	// d.Decode(&rf.yyy)
+}
+
+// example RequestVote RPC handler.
+//func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+// Your code here.
+//}
+
+// example code to send a RequestVote RPC to a server.
+// server is the index of the target server in rf.peers[].
+// expects RPC arguments in args.
+// fills in *reply with RPC reply, so caller should
+// pass &reply.
+// the types of the args and reply passed to Call() must be
+// the same as the types of the arguments declared in the
+// handler function (including whether they are pointers).
+//
+// returns true if labrpc says the RPC was delivered.
+//
+// if you're having trouble getting RPC to work, check that you've
+// capitalized all field names in structs passed over RPC, and
+// that the caller passes the address of the reply struct with &, not
+// the struct itself.
+func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
+	fmt.Println("tttttt")
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply, 100)
+	return ok
+}
+
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+// TODO tole implementiraj
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	if rf.serverState != LEADER {
+		return -1, -1, false
+	}
+	rf.writeToFile("Received request\n")
+
+	heartbeatResponse := ClientRequestReply{}
+	rf.peers[rf.me].Call("Raft.ClientRequest", ClientRequestArgs{Message: command}, &heartbeatResponse, 200)
+	fmt.Println(heartbeatResponse)
+	if heartbeatResponse.Success {
+		fmt.Println("success")
+		return heartbeatResponse.Position, rf.currentTerm, true
+	}
+	fmt.Println("fail")
+
+	return -1, rf.currentTerm, true
+}
+
+// the tester calls Kill() when a Raft instance won't
+// be needed again. you are not required to do anything
+// in Kill(), but it might be convenient to (for example)
+// turn off debug output from this instance.
+func (rf *Raft) Kill() {
+	// Your code here, if desired.
+}
+
+// the service or tester wants to create a Raft server. the ports
+// of all the Raft servers (including this one) are in peers[]. this
+// server's port is peers[me]. all the servers' peers[] arrays
+// have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most
+// recent saved state, if any. applyCh is a channel on which the
+// tester or service expects Raft to send ApplyMsg messages.
+// Make() must return quickly, so it should start goroutines
+// for any long-running work.
+func Make(peers []*labrpc.ClientEnd, me int,
+	persister *Persister, applyCh chan ApplyMsg) *Raft {
+
+	rf := CreateServer(peers, me, persister, applyCh)
+
+	// Your initialization code here.
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
+	return rf
+}
