@@ -155,7 +155,10 @@ func (server *Server) resetVoteCountAndVoteForYourself() {
 }
 
 func (server *Server) issueVoteRequestsToOtherServers() {
-	for _, address := range server.serverAddresses {
+	for index, address := range server.serverAddresses {
+		if index == server.serverAddressIndex {
+			continue
+		}
 		go func() {
 			conn, err := grpc.NewClient(address, grpc.WithInsecure())
 			if err != nil {
