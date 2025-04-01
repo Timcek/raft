@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"raftImplementation/raft/server"
 	"strconv"
@@ -8,7 +9,11 @@ import (
 
 // Function used to start the server. The function gets called from main.go by starting a completely new OS process
 func main() {
-	addresses := []string{"127.0.0.1:50000", "127.0.0.1:50001", "127.0.0.1:50002", "127.0.0.1:50003", "127.0.0.1:50004"}
+	configuration := ProcessConfigFile(os.Args[2])
+	addresses := make([]string, configuration.NumberOfServers)
+	for i := 0; i < configuration.NumberOfServers; i++ {
+		addresses[i] = fmt.Sprintf("127.0.0.1:5000%d", i)
+	}
 	serverIndex, _ := strconv.Atoi(os.Args[1])
 	server.CreateServer(serverIndex, addresses)
 }
