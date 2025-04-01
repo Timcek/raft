@@ -9,6 +9,7 @@ import (
 	"os"
 	"raftImplementation/raft/log"
 	sgrpc "raftImplementation/raft/server/src"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -29,11 +30,11 @@ type Server struct {
 	// LEADER or FOLLOWER or CANDIDATE
 	serverState int
 
-	leaderAddress string // TODO to prestavlja address od trenutnega leaderja. Potrebno implementirati, da bo kliente preusmerilo nanj
-	// serverAddresses contains addresses of the servers in the cluster without this server
+	leaderAddress string
+	// serverAddresses contains addresses of all the servers in the cluster
 	serverAddresses []string
-	// Current server address, used for other servers to set leader to this address, when this server is elected for leader
-	serverAddress string
+	// Current server address index in serverAddresses, used for other servers to set leader to this address, when this server is elected for leader
+	serverAddressIndex int
 
 	// Timers used for triggering elections and heartbeat
 	electionTimer  *time.Timer
@@ -62,7 +63,7 @@ type Server struct {
 
 // Server constructor
 
-func CreateServer(address string, addresses []string) {
+func CreateServer(addressIndex int, addresses []string) {
 	// Create server with starting values
 	server := Server{}
 	server.currentTerm = 0
@@ -73,12 +74,12 @@ func CreateServer(address string, addresses []string) {
 	// value is 0 this means that the first entry is commited)
 	server.commitIndex = -1
 
-	server.serverAddress = address
+	server.serverAddressIndex = addressIndex
 	server.serverAddresses = addresses
 	server.createElectionTimer()
-	server.nextIndex = make([]int, len(server.serverAddresses)+1)
+	server.nextIndex = make([]int, len(server.serverAddresses))
 
-	file, err := os.Create("output" + address + ".txt")
+	file, err := os.Create("output" + strconv.Itoa(addressIndex) + ".txt")
 	defer file.Close()
 	if err != nil {
 		fmt.Println("Error creating file:", err)
@@ -90,11 +91,11 @@ func CreateServer(address string, addresses []string) {
 	grpcServer := grpc.NewServer()
 	sgrpc.RegisterServerServiceServer(grpcServer, &server)
 	// odpremo vtičnico
-	listener, err := net.Listen("tcp", address)
+	listener, err := net.Listen("tcp", server.serverAddresses[server.serverAddressIndex])
 	if err != nil {
 		panic(err)
 	}
-	server.writeToFile("gRPC server listening at " + address + "\n")
+	server.writeToFile("gRPC server listening at " + server.serverAddresses[server.serverAddressIndex] + "\n")
 	// začnemo s streženjem
 	if err := grpcServer.Serve(listener); err != nil {
 		panic(err)
@@ -139,7 +140,7 @@ func (server *Server) beginElection() {
 	server.resetVoteCountAndVoteForYourself()
 	server.issueVoteRequestsToOtherServers()
 	server.resetElectionTimer()
-	server.writeToFile("Election began " + server.serverAddress + "\n")
+	server.writeToFile("Election began " + server.serverAddresses[server.serverAddressIndex] + "\n")
 }
 
 func (server *Server) increaseTerm() {
@@ -154,7 +155,10 @@ func (server *Server) resetVoteCountAndVoteForYourself() {
 }
 
 func (server *Server) issueVoteRequestsToOtherServers() {
-	for _, address := range server.serverAddresses {
+	for index, address := range server.serverAddresses {
+		if index == server.serverAddressIndex {
+			continue
+		}
 		go func() {
 			conn, err := grpc.NewClient(address, grpc.WithInsecure())
 			if err != nil {
@@ -194,8 +198,10 @@ func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
 	} else {
 		server.receivesDeniedVote(int(message.Term))
 	}
-	// We always use odd number of servers so if the number of votes is greater than serverAddresses/2 the majority has voted for this server to become a leader.
-	if server.voteCount > len(server.serverAddresses)/2 {
+	// We always use odd number of servers, so if the number of votes is greater than (serverAddresses+1)/2 (by adding
+	// 1 we make sure, that the number is rounded up. For example if we use 5 servers and divide it in half we need to
+	// round to 3 which represents majority) the majority has voted for this server to become the leader.
+	if server.voteCount >= (len(server.serverAddresses)+1)/2 {
 		// This server won the elections
 		server.becomeLeader()
 	}
@@ -217,8 +223,8 @@ func (server *Server) manageHeartbeat() {
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
-			server.heartbeatTimeout()
 			server.resetHeartbeat()
+			server.heartbeatTimeout()
 		}
 	}()
 }
@@ -245,7 +251,10 @@ func (server *Server) heartbeatTimeout() {
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
-		if server.nextIndex[index+1] != server.nextIndex[0] {
+		if index == server.serverAddressIndex {
+			continue
+		}
+		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
 			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
 
 			server.prepareAndSendAppendEntry(index, &wg, address)
@@ -257,39 +266,39 @@ func (server *Server) heartbeatTimeout() {
 	server.logReplicationMutex.Unlock()
 }
 
-func (server *Server) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup, address string) {
-	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[index+1])
+func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGroup, address string) {
+	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
 
 	message := sgrpc.AppendEntryMessage{
 		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
+		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
 		PrevLogIndex:  prevLogTerm,
 		PrevLogTerm:   prevLogIndex,
 		Entry: &sgrpc.LogEntry{
-			Term:     int64(server.log[server.nextIndex[index+1]].Term),
-			Index:    int64(server.log[server.nextIndex[index+1]].Index),
-			Message:  server.log[server.nextIndex[index+1]].Msg,
-			Commited: server.log[server.nextIndex[index+1]].Commited,
+			Term:     int64(server.log[server.nextIndex[serverIndex]].Term),
+			Index:    int64(server.log[server.nextIndex[serverIndex]].Index),
+			Message:  server.log[server.nextIndex[serverIndex]].Msg,
+			Commited: server.log[server.nextIndex[serverIndex]].Commited,
 		},
 		LeaderCommit: int64(server.commitIndex),
 	}
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
-	serverLogLength := server.nextIndex[index+1] + 1
+	serverLogLength := server.nextIndex[serverIndex] + 1
 	wg.Add(1)
-	server.sendAppendEntryMessage(address, &message, index, serverLogLength, wg)
+	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength, wg)
 }
 
-func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, index int) {
+func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, serverIndex int) {
 	message := sgrpc.AppendEntryMessage{
 		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
+		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
 		PrevLogIndex:  lastLogIndex,
 		PrevLogTerm:   lastLogTerm,
 		Entry:         nil,
 		LeaderCommit:  int64(server.commitIndex),
 	}
-	server.sendHeartbeatMessage(address, &message, nil, index+1)
+	server.sendHeartbeatMessage(address, &message, nil, serverIndex)
 }
 
 // Change server state
@@ -440,6 +449,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position]
 			server.appendToLog(in.Entry)
+			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
@@ -603,9 +613,16 @@ func (server *Server) writeToFile(writeString string) {
 
 // Server log replication
 
+// ClientRequest is used for adding log entries to servers log.
+//
+// If this server is not the leader it returns Success=false and LeaderAddress contains address of the real leader.
+// The client that called this method should send another request with the same log entry to the received LeaderAddress.
 func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequestMessage) (*sgrpc.ClientRequestResponse, error) {
 	if server.serverState != LEADER {
-		return &sgrpc.ClientRequestResponse{Success: false}, nil
+		return &sgrpc.ClientRequestResponse{
+			Success:       false,
+			LeaderAddress: server.leaderAddress,
+		}, nil
 	}
 	server.writeToFile("Received client request\n")
 
@@ -621,7 +638,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	}
 	server.appendToLog(&newLog)
 	// Increase the number of logs replicated on this server
-	server.nextIndex[0]++
+	server.nextIndex[server.serverAddressIndex]++
 
 	server.resetHeartbeat()
 	server.sendAppendEntries()
@@ -636,7 +653,7 @@ func (server *Server) sendAppendEntries() {
 	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
 	appendEntryMessage := sgrpc.AppendEntryMessage{
 		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddress,
+		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
 		PrevLogIndex:  prevLogIndex,
 		PrevLogTerm:   prevLogTerm,
 		Entry: &sgrpc.LogEntry{
@@ -649,9 +666,12 @@ func (server *Server) sendAppendEntries() {
 
 	var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
+		if index == server.serverAddressIndex {
+			continue
+		}
 		// If the number of log entries on the current server is for one bigger than the other server,
 		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.nextIndex[index+1] == logLengthWhenIssuingAppendEntries-1 {
+		if server.nextIndex[index] == logLengthWhenIssuingAppendEntries-1 {
 			wg.Add(1)
 			server.sendAppendEntryMessage(address, &appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
 		}
@@ -662,7 +682,8 @@ func (server *Server) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage, waitGroup *sync.WaitGroup, serverArrayPosition int) {
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage,
+	waitGroup *sync.WaitGroup, serverIndex int) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
@@ -683,24 +704,25 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 			fmt.Println(err)
 		} else {
 			server.heartbeatMutex.Lock()
-			server.processHeartbeatResponse(heartbeatResponse, serverArrayPosition)
+			server.processHeartbeatResponse(heartbeatResponse, serverIndex)
 			server.heartbeatMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverArrayPosition int) {
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverIndex int) {
 	if !response.Success && int(response.Term) > server.currentTerm {
 		// We receive success false, because the other server has higher term tha this
 		server.becomeCandidate()
 		server.changeTerm(int(response.Term), false)
 	} else if !response.Success {
 		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
-		server.nextIndex[serverArrayPosition]--
+		server.nextIndex[serverIndex]--
 	}
 }
 
-func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage *sgrpc.AppendEntryMessage, index int, logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
+func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage *sgrpc.AppendEntryMessage, serverIndex int,
+	logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
 	go func() {
 		if waitGroup != nil {
 			defer waitGroup.Done()
@@ -719,17 +741,18 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 			fmt.Println(err)
 		} else {
 			server.processAppendEntryResponseMutex.Lock()
-			server.processAppendEntryResponse(appendEntryResponse, index, logLengthToCheckForMajorityReplication)
+			server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication)
 			server.processAppendEntryResponseMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int, logLengthToCheckForMajorityReplication int) {
+func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int,
+	logLengthToCheckForMajorityReplication int) {
 	// Add 1, because the first index is reserved for the current server.
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
-	if appendEntryResponse.Success && server.nextIndex[serverIndex+1] < server.nextIndex[0] {
-		server.nextIndex[serverIndex+1]++
+	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
+		server.nextIndex[serverIndex]++
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term
@@ -737,7 +760,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.changeTerm(int(appendEntryResponse.Term), false)
 	} else if !appendEntryResponse.Success {
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
-		server.nextIndex[serverIndex+1]--
+		server.nextIndex[serverIndex]--
 	}
 }
 

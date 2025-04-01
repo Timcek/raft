@@ -48,4 +48,5 @@ message ClientRequestMessage {
 
 message ClientRequestResponse {
   bool success = 1;
+  string leaderAddress = 2;
 }
