@@ -44,6 +44,10 @@ type Server struct {
 	voteCount  int
 	inElection bool
 
+	// This is used for indicating that we are fixing one server's log, and we should stop sending heartbeat and append
+	// entry to that server.
+	logCorrectionLock []bool
+
 	// Locks needed for concurrent vote request and heartbeat sending
 	electionMutex                   sync.Mutex
 	heartbeatMutex                  sync.Mutex
@@ -78,6 +82,7 @@ func CreateServer(addressIndex int, addresses []string) {
 	server.serverAddresses = addresses
 	server.createElectionTimer()
 	server.nextIndex = make([]int, len(server.serverAddresses))
+	server.logCorrectionLock = make([]bool, len(server.serverAddresses))
 
 	file, err := os.Create("output" + strconv.Itoa(addressIndex) + ".txt")
 	defer file.Close()
@@ -155,8 +160,8 @@ func (server *Server) resetVoteCountAndVoteForYourself() {
 }
 
 func (server *Server) issueVoteRequestsToOtherServers() {
-	for index, address := range server.serverAddresses {
-		if index == server.serverAddressIndex {
+	for serverIndex, address := range server.serverAddresses {
+		if serverIndex == server.serverAddressIndex {
 			continue
 		}
 		go func() {
@@ -249,25 +254,34 @@ func (server *Server) heartbeatTimeout() {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
+	var sendingToServersIndex []int
 	var wg sync.WaitGroup
-	for index, address := range server.serverAddresses {
-		if index == server.serverAddressIndex {
+	server.appendEntryMutex.Lock()
+	for serverIndex, address := range server.serverAddresses {
+		if serverIndex == server.serverAddressIndex || server.logCorrectionLock[serverIndex] {
 			continue
 		}
-		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
-			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
-
-			server.prepareAndSendAppendEntry(index, &wg, address)
+		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+			sendingToServersIndex = append(sendingToServersIndex, serverIndex)
+			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", serverIndex) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
+			server.logCorrectionLock[serverIndex] = true
+			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
 		} else {
-			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
+			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, serverIndex)
 		}
 	}
+	server.appendEntryMutex.Unlock()
 	wg.Wait()
+	server.appendEntryMutex.Lock()
+	for _, serverIndex := range sendingToServersIndex {
+		server.logCorrectionLock[serverIndex] = false
+	}
+	server.appendEntryMutex.Unlock()
 	server.logReplicationMutex.Unlock()
 }
 
 func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGroup, address string) {
-	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
+	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
 
 	message := sgrpc.AppendEntryMessage{
 		Term:          int64(server.currentTerm),
@@ -298,7 +312,7 @@ func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm in
 		Entry:         nil,
 		LeaderCommit:  int64(server.commitIndex),
 	}
-	server.sendHeartbeatMessage(address, &message, nil, serverIndex)
+	server.sendHeartbeatMessage(address, &message, serverIndex)
 }
 
 // Change server state
@@ -306,6 +320,7 @@ func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm in
 func (server *Server) becomeCandidate() {
 	server.inElection = false
 	server.serverState = CANDIDATE
+	server.logCorrectionLock = make([]bool, len(server.nextIndex))
 	server.stopHeartbeat()
 	server.resetElectionTimer()
 }
@@ -313,6 +328,7 @@ func (server *Server) becomeCandidate() {
 func (server *Server) becomeFollower(leaderAddress string) {
 	server.inElection = false
 	server.serverState = FOLLOWER
+	server.logCorrectionLock = make([]bool, len(server.nextIndex))
 	server.stopHeartbeat()
 	server.resetElectionTimer()
 	server.leaderAddress = leaderAddress
@@ -321,6 +337,7 @@ func (server *Server) becomeFollower(leaderAddress string) {
 func (server *Server) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
+	server.logCorrectionLock = make([]bool, len(server.nextIndex))
 	server.initializeNextIndex()
 	server.stopElectionTimer()
 	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
@@ -648,46 +665,35 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 }
 
 func (server *Server) sendAppendEntries() {
-	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(len(server.log) - 1)
-	logLengthWhenIssuingAppendEntries := len(server.log)
-	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
-	appendEntryMessage := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
-		PrevLogIndex:  prevLogIndex,
-		PrevLogTerm:   prevLogTerm,
-		Entry: &sgrpc.LogEntry{
-			Term:    int64(lastLog.Term),
-			Index:   int64(lastLog.Index),
-			Message: lastLog.Msg,
-		},
-		LeaderCommit: int64(server.commitIndex),
-	}
-
+	var sendingToServersIndex []int
 	var wg sync.WaitGroup
-	for index, address := range server.serverAddresses {
-		if index == server.serverAddressIndex {
+	server.appendEntryMutex.Lock()
+	for serverIndex, address := range server.serverAddresses {
+		if serverIndex == server.serverAddressIndex || server.logCorrectionLock[serverIndex] {
 			continue
 		}
 		// If the number of log entries on the current server is for one bigger than the other server,
 		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.nextIndex[index] == logLengthWhenIssuingAppendEntries-1 {
-			wg.Add(1)
-			server.sendAppendEntryMessage(address, &appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
+		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+			sendingToServersIndex = append(sendingToServersIndex, serverIndex)
+			server.logCorrectionLock[serverIndex] = true
+			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
 		}
 	}
+	server.appendEntryMutex.Unlock()
 	// We wait for all the AppendEntry messages to return, only then we allow new AppendEntry to be sent.
 	wg.Wait()
+	server.appendEntryMutex.Lock()
+	for _, serverIndex := range sendingToServersIndex {
+		server.logCorrectionLock[serverIndex] = false
+	}
+	server.appendEntryMutex.Unlock()
 }
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage,
-	waitGroup *sync.WaitGroup, serverIndex int) {
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage, serverIndex int) {
 	go func() {
-		if waitGroup != nil {
-			defer waitGroup.Done()
-		}
 		conn, err := grpc.NewClient(address, grpc.WithInsecure())
 		if err != nil {
 			panic(err)
@@ -704,20 +710,28 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 			fmt.Println(err)
 		} else {
 			server.heartbeatMutex.Lock()
-			server.processHeartbeatResponse(heartbeatResponse, serverIndex)
+			server.processHeartbeatResponse(heartbeatResponse, serverIndex, address)
 			server.heartbeatMutex.Unlock()
 		}
 	}()
 }
 
-func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverIndex int) {
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverIndex int, address string) {
 	if !response.Success && int(response.Term) > server.currentTerm {
 		// We receive success false, because the other server has higher term tha this
 		server.becomeCandidate()
 		server.changeTerm(int(response.Term), false)
 	} else if !response.Success {
-		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
+		// We receive success false, because this leader has different log than the follower, to which the appendEntry
+		// was sent.
 		server.nextIndex[serverIndex]--
+		if server.serverState == LEADER {
+			server.logCorrectionLock[serverIndex] = true
+			var wg sync.WaitGroup
+			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
+			wg.Wait()
+			server.logCorrectionLock[serverIndex] = false
+		}
 	}
 }
 
@@ -741,19 +755,24 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 			fmt.Println(err)
 		} else {
 			server.processAppendEntryResponseMutex.Lock()
-			server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication)
+			server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication, address)
 			server.processAppendEntryResponseMutex.Unlock()
 		}
 	}()
 }
 
 func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int,
-	logLengthToCheckForMajorityReplication int) {
+	logLengthToCheckForMajorityReplication int, address string) {
 	// Add 1, because the first index is reserved for the current server.
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex]++
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
+		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+			var wg sync.WaitGroup
+			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
+			wg.Wait()
+		}
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term
 		server.becomeCandidate()
@@ -761,6 +780,11 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	} else if !appendEntryResponse.Success {
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
+		if server.serverState == LEADER {
+			var wg sync.WaitGroup
+			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
+			wg.Wait()
+		}
 	}
 }
 
@@ -779,5 +803,3 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 		server.commitAllEntriesUpToCommitIndex(logLengthToCheckForMajorityReplication - 1)
 	}
 }
-
-//TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
