@@ -53,6 +53,9 @@ type Server struct {
 	heartbeatMutex                  sync.Mutex
 	logReplicationMutex             sync.Mutex
 	processAppendEntryResponseMutex sync.Mutex
+	// We need this to prevent append entry to trigger two request to the same server at the same tim (we need to
+	// properly update logCorrectionLock)
+	appendEntryMutex sync.Mutex
 
 	//volatile state on every server
 	commitIndex int
