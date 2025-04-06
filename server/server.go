@@ -351,8 +351,8 @@ func (server *Raft) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup) {
 
 	message := AppendEntryArgs{
 		Term:         server.currentTerm,
-		PrevLogIndex: prevLogTerm,
-		PrevLogTerm:  prevLogIndex,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
 		Entry: log.Message{
 			Term:     server.log[server.nextIndex[index]].Term,
 			Index:    server.log[server.nextIndex[index]].Index,
@@ -774,9 +774,7 @@ func (server *Raft) sendHeartbeatMessage(heartbeatMessage AppendEntryArgs, serve
 		elapsed := time.Since(start)
 		server.writeToFile("Function took " + fmt.Sprintf("%v\n", elapsed))
 		if !ok {
-			server.writeToFileMutex.Lock()
 			server.writeToFile("Problem with heartbeat\n")
-			server.writeToFileMutex.Unlock()
 		} else {
 			server.writeToFile("Successfully sent heartbeat\n")
 			server.writeToFile(fmt.Sprintf("%v\n", server.nextIndex))
@@ -818,13 +816,9 @@ func (server *Raft) sendAppendEntryMessage(appendEntryMessage AppendEntryArgs, s
 		server.writeToFile("ending")
 
 		if !ok {
-			server.writeToFileMutex.Lock()
 			server.writeToFile("Problem with sending Append Entry")
-			server.writeToFileMutex.Unlock()
 		} else {
-			server.processAppendEntryResponseMutex.Lock()
 			server.processAppendEntryResponse(&appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication)
-			server.processAppendEntryResponseMutex.Unlock()
 		}
 	}()
 }
