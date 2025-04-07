@@ -715,6 +715,7 @@ func (server *Raft) ClientRequest(in ClientRequestArgs, out *ClientRequestReply)
 	server.writeToFile("Received client request\n")
 
 	server.logReplicationMutex.Lock()
+	defer server.logReplicationMutex.Unlock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if lastLogTerm != server.currentTerm {
 		lastLogIndex = 0
@@ -735,7 +736,6 @@ func (server *Raft) ClientRequest(in ClientRequestArgs, out *ClientRequestReply)
 	fmt.Println("I am the leaderrrrrrrrrrrrrrrrrrrrrr " + fmt.Sprintf("%v", server.me))
 	out.Position = len(server.log) - 1
 	out.Success = true
-	server.logReplicationMutex.Unlock()
 
 	return
 }
@@ -949,14 +949,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.writeToFile("Received request\n")
 
-	heartbeatResponse := ClientRequestReply{}
-	rf.peers[rf.me].Call("Raft.ClientRequest", ClientRequestArgs{Message: command}, &heartbeatResponse, 200)
-	fmt.Println(heartbeatResponse)
-	if heartbeatResponse.Success {
+	clientRequestReply := ClientRequestReply{}
+	rf.peers[rf.me].Call("Raft.ClientRequest", ClientRequestArgs{Message: command}, &clientRequestReply, 200)
+	fmt.Println("clientRequestReply: " + fmt.Sprintf("%v", clientRequestReply))
+	if clientRequestReply.Success {
 		fmt.Println("success")
-		return heartbeatResponse.Position, rf.currentTerm, true
+		return clientRequestReply.Position, rf.currentTerm, true
 	}
-	fmt.Println("fail")
+	fmt.Println("failssssssss")
 
 	return -1, rf.currentTerm, true
 }
