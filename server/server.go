@@ -333,7 +333,9 @@ func (server *Raft) heartbeatTimeout() {
 			server.prepareAndSendAppendEntry(serverIndex, &wg)
 			server.writeToFile("-----------------------------llllllllllllllllllllll\n")
 		} else {
-			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, serverIndex)
+			sendingToServersIndex = append(sendingToServersIndex, serverIndex)
+			server.logCorrectionLock[serverIndex] = true
+			server.prepareAndSendHeartbeat(lastLogIndex, &wg, lastLogTerm, serverIndex, "heartbeat-"+fmt.Sprintf("%v", rand.Intn(1000)))
 		}
 	}
 	server.appendEntryMutex.Unlock()
@@ -368,7 +370,7 @@ func (server *Raft) prepareAndSendAppendEntry(index int, wg *sync.WaitGroup) {
 	server.sendAppendEntryMessage(message, index, serverLogLength, wg)
 }
 
-func (server *Raft) prepareAndSendHeartbeat(lastLogIndex int, lastLogTerm int, serverIndex int) {
+func (server *Raft) prepareAndSendHeartbeat(lastLogIndex int, wg *sync.WaitGroup, lastLogTerm int, serverIndex int, ident string) {
 	message := AppendEntryArgs{
 		Term:         server.currentTerm,
 		PrevLogIndex: lastLogIndex,
@@ -376,7 +378,7 @@ func (server *Raft) prepareAndSendHeartbeat(lastLogIndex int, lastLogTerm int, s
 		Entry:        log.Message{},
 		LeaderCommit: server.commitIndex,
 	}
-	server.sendHeartbeatMessage(message, serverIndex)
+	server.sendHeartbeatMessage(message, wg, serverIndex)
 }
 
 // Change server state
@@ -505,7 +507,7 @@ func (server *Raft) receivedValidAppendEntry(newLogEntry *log.Message, out *Appe
 
 func (server *Raft) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *AppendEntryArgs, out *AppendEntryReply, commitIndex int) {
 	out.Term = server.currentTerm
-	if !server.log[0].Commited {
+	if len(server.log) > 0 && !server.log[0].Commited {
 		server.becomeFollower(in.LeaderAddress)
 		server.writeToFile("receivedFirstLogEntryButCurrentServerLogIsNotEmpty\n")
 		server.log = server.log[:0]
@@ -766,8 +768,12 @@ func (server *Raft) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Raft) sendHeartbeatMessage(heartbeatMessage AppendEntryArgs, serverIndex int) {
+func (server *Raft) sendHeartbeatMessage(heartbeatMessage AppendEntryArgs, wg *sync.WaitGroup, serverIndex int) {
+	wg.Add(1)
 	go func() {
+		if wg != nil {
+			defer wg.Done()
+		}
 		start := time.Now()
 		heartbeatResponse := AppendEntryReply{}
 		ok := server.peers[serverIndex].Call("Raft.AppendEntry", heartbeatMessage, &heartbeatResponse, 100)
