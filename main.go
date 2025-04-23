@@ -35,7 +35,7 @@ func main() {
 		//processes[i] = cmd
 		fmt.Println(strconv.Itoa(cmd.Process.Pid) + "  ---  " + "localhost:5000" + strconv.Itoa(i))
 	}
-	time.Sleep(1000 * time.Second)
+	time.Sleep(1000000 * time.Second)
 	/*for _, process := range processes {
 		err := process.Wait()
 		if err != nil {

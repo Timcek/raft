@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"google.golang.org/grpc"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -18,8 +19,11 @@ const LEADER = 1
 const FOLLOWER = 2
 const CANDIDATE = 3
 
-// This means the number of milliseconds
-const electionTimeoutTime = 16000
+const jsVisualizationSpeed = float64(1) / float64(100)
+
+// This means the number of milliseconds. Current election timeout is set to 200ms, if we want to change that number we
+// have to change it in visualization too.
+var electionTimeoutTime = int(math.Pow(jsVisualizationSpeed, -1) * 200)
 
 type Server struct {
 	sgrpc.UnimplementedServerServiceServer
@@ -75,6 +79,8 @@ func CreateServer(addressIndex int, addresses []string) {
 	server.commitIndex = -1
 
 	server.serverAddressIndex = addressIndex
+	go startServerWebSocket(server.serverAddressIndex)
+	time.Sleep(3 * time.Second)
 	server.serverAddresses = addresses
 	server.createElectionTimer()
 	server.nextIndex = make([]int, len(server.serverAddresses))
@@ -118,7 +124,9 @@ func (server *Server) createElectionTimer() {
 
 func (server *Server) resetElectionTimer() {
 	randomNum := rand.Intn(electionTimeoutTime/2) + electionTimeoutTime/2
+	server.writeToFile(fmt.Sprintf("%v", randomNum))
 	server.electionTimer.Reset(time.Millisecond * time.Duration(randomNum))
+	server.sendElectionTimeoutChange(randomNum)
 }
 
 func (server *Server) stopElectionTimer() {
@@ -146,6 +154,7 @@ func (server *Server) beginElection() {
 func (server *Server) increaseTerm() {
 	server.currentTerm = server.currentTerm + 1
 	server.votedInThisTerm = false
+	server.updateServerTerm()
 }
 
 func (server *Server) resetVoteCountAndVoteForYourself() {
@@ -155,6 +164,7 @@ func (server *Server) resetVoteCountAndVoteForYourself() {
 }
 
 func (server *Server) issueVoteRequestsToOtherServers() {
+	fmt.Println("lkasjflksjf")
 	for index, address := range server.serverAddresses {
 		if index == server.serverAddressIndex {
 			continue
@@ -168,7 +178,8 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 
 			grpcClient := sgrpc.NewServerServiceClient(conn)
 
-			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+			server.writeToFile(fmt.Sprintf("timeout: %v", time.Millisecond*time.Duration(electionTimeoutTime/8)))
+			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(electionTimeoutTime/8))
 			defer cancel()
 
 			lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
@@ -176,24 +187,30 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 				Term:         int64(server.currentTerm),
 				LastLogTerm:  lastLogTerm,
 				LastLogIndex: lastLogIndex,
+				ServerIndex:  int64(server.serverAddressIndex),
 			}
+
+			server.sendVoteRequest(index)
+			time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 			voteResult, err := grpcClient.RequestVote(contextServer, &requestVote)
+			time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 			if err != nil {
-				fmt.Println(err)
+				server.writeToFile(fmt.Sprintf("%v", err))
 			} else {
-				server.processVoteResult(voteResult)
+				server.processVoteResult(voteResult, index)
 			}
 		}()
 	}
 }
 
-func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse) {
+func (server *Server) processVoteResult(message *sgrpc.RequestVoteResponse, serverIndex int) {
 	server.electionMutex.Lock()
 	defer server.electionMutex.Unlock()
 	if !server.inElection {
 		return
 	}
 	if message.VoteGranted {
+		server.grantVote(serverIndex)
 		server.voteCount++
 	} else {
 		server.receivesDeniedVote(int(message.Term))
@@ -219,7 +236,7 @@ func (server *Server) receivesDeniedVote(term int) {
 // Leader heartbeat management
 
 func (server *Server) manageHeartbeat() {
-	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
+	server.heartbeatTimer = time.NewTimer(time.Millisecond * time.Duration(electionTimeoutTime/4))
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
@@ -241,7 +258,7 @@ func (server *Server) resetHeartbeat() {
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
 	} else {
-		server.heartbeatTimer.Reset(time.Millisecond * (electionTimeoutTime / 4))
+		server.heartbeatTimer.Reset(time.Millisecond * time.Duration(electionTimeoutTime/4))
 	}
 }
 
@@ -270,10 +287,10 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGr
 	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
 
 	message := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
-		PrevLogIndex:  prevLogTerm,
-		PrevLogTerm:   prevLogIndex,
+		Term:               int64(server.currentTerm),
+		LeaderAddressIndex: int64(server.serverAddressIndex),
+		PrevLogIndex:       prevLogTerm,
+		PrevLogTerm:        prevLogIndex,
 		Entry: &sgrpc.LogEntry{
 			Term:     int64(server.log[server.nextIndex[serverIndex]].Term),
 			Index:    int64(server.log[server.nextIndex[serverIndex]].Index),
@@ -291,12 +308,12 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGr
 
 func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, serverIndex int) {
 	message := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
-		PrevLogIndex:  lastLogIndex,
-		PrevLogTerm:   lastLogTerm,
-		Entry:         nil,
-		LeaderCommit:  int64(server.commitIndex),
+		Term:               int64(server.currentTerm),
+		LeaderAddressIndex: int64(server.serverAddressIndex),
+		PrevLogIndex:       lastLogIndex,
+		PrevLogTerm:        lastLogTerm,
+		Entry:              nil,
+		LeaderCommit:       int64(server.commitIndex),
 	}
 	server.sendHeartbeatMessage(address, &message, nil, serverIndex)
 }
@@ -310,12 +327,12 @@ func (server *Server) becomeCandidate() {
 	server.resetElectionTimer()
 }
 
-func (server *Server) becomeFollower(leaderAddress string) {
+func (server *Server) becomeFollower(leaderAddressIndex int) {
 	server.inElection = false
 	server.serverState = FOLLOWER
 	server.stopHeartbeat()
 	server.resetElectionTimer()
-	server.leaderAddress = leaderAddress
+	server.leaderAddress = server.serverAddresses[leaderAddressIndex]
 }
 
 func (server *Server) becomeLeader() {
@@ -323,6 +340,7 @@ func (server *Server) becomeLeader() {
 	server.inElection = false
 	server.initializeNextIndex()
 	server.stopElectionTimer()
+	server.sendBecomeLeader()
 	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
 	server.heartbeatTimeout()
 	server.resetHeartbeat()
@@ -347,12 +365,12 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 
 	if in.Entry == nil {
 		server.writeToFile(" Received heartbeat " + fmt.Sprintf("%v", server.log) + "\n")
-		server.becomeFollower(in.LeaderAddress)
-		return server.checkTheReceivedHeartbeat(in, int(in.LeaderCommit))
+		server.becomeFollower(int(in.LeaderAddressIndex))
+		return server.checkTheReceivedHeartbeat(in)
 	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entry.Term) &&
 		server.log[len(server.log)-1].Index == int(in.Entry.Index) {
 		// Received append entry with the same entry as the last log entry
-		server.becomeFollower(in.LeaderAddress)
+		server.becomeFollower(int(in.LeaderAddressIndex))
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
 			Success: true,
@@ -362,8 +380,8 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		server.writeToFile("Received append entry \n" + fmt.Sprintf("%v", in))
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
-		server.becomeFollower(in.LeaderAddress)
-		return server.receivedValidAppendEntry(in.Entry, int(in.LeaderCommit)), nil
+		server.becomeFollower(int(in.LeaderAddressIndex))
+		return server.receivedValidAppendEntry(in), nil
 	} else {
 		// Received AppendEntry does not fit on the end of the log. We start moving backwards towards the commited part
 		// of the log to find where the entry can be inserted. If we reach the commited part of the log before finding
@@ -371,7 +389,7 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		// find log entry that fits into our log. The worst case scenario is that we move back all the way to the
 		// commited part and have to replace all log entries after the commited part.
 		if in.PrevLogTerm == 0 && in.PrevLogIndex == 0 {
-			return server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in, int(in.LeaderCommit))
+			return server.receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in)
 		}
 		return server.findLogPositionAndInsertLogEntry(in, int(in.LeaderCommit))
 	}
@@ -390,47 +408,51 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInHeartbeatIsHigher
 	}
 }
 
-func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
+func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	if in.PrevLogTerm != 0 && in.PrevLogIndex != 0 &&
 		(len(server.log) == 0 ||
 			server.log[len(server.log)-1].Term != int(in.PrevLogTerm) ||
 			server.log[len(server.log)-1].Index != int(in.PrevLogIndex)) {
-		return server.receivedHeartbeatWithNewerLog(), nil
+		return server.receivedHeartbeatWithNewerLog(int(in.LeaderAddressIndex)), nil
 	}
-	server.commitEntriesOnFollower(commitIndex)
-	return server.receivedValidHeartbeat(), nil
+	server.commitEntriesOnFollower(int(in.LeaderCommit))
+	return server.receivedValidHeartbeat(int(in.LeaderAddressIndex)), nil
 }
 
-func (server *Server) receivedHeartbeatWithNewerLog() *sgrpc.AppendEntryResponse {
+func (server *Server) receivedHeartbeatWithNewerLog(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
+	server.sendHeartbeatReply(leaderAddressIndex, false)
+	time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: false,
 	}
 }
 
-func (server *Server) receivedValidHeartbeat() *sgrpc.AppendEntryResponse {
+func (server *Server) receivedValidHeartbeat(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
+	server.sendHeartbeatReply(leaderAddressIndex, true)
+	time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
 	}
 }
 
-func (server *Server) receivedValidAppendEntry(newLogEntry *sgrpc.LogEntry, commitIndex int) *sgrpc.AppendEntryResponse {
+func (server *Server) receivedValidAppendEntry(in *sgrpc.AppendEntryMessage) *sgrpc.AppendEntryResponse {
 	server.resetElectionTimer()
-	server.appendToLog(newLogEntry)
-	server.commitEntriesOnFollower(commitIndex)
+	server.appendToLog(in.Entry)
+	server.commitEntriesOnFollower(int(in.LeaderCommit))
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
 	}
 }
 
-func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
+func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	if !server.log[0].Commited {
-		server.becomeFollower(in.LeaderAddress)
+		server.becomeFollower(int(in.LeaderAddressIndex))
 		server.log = server.log[:0]
 		server.appendToLog(in.Entry)
-		server.commitEntriesOnFollower(commitIndex)
+		server.commitEntriesOnFollower(int(in.LeaderCommit))
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
 			Success: true,
@@ -449,7 +471,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position]
 			server.appendToLog(in.Entry)
-			server.becomeFollower(in.LeaderAddress)
+			server.becomeFollower(int(in.LeaderAddressIndex))
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
 				Term:    int64(server.currentTerm),
@@ -468,7 +490,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		}, nil
 	}
 	//We received commited append entry that is not in our log
-	server.becomeFollower(in.LeaderAddress)
+	server.becomeFollower(int(in.LeaderAddressIndex))
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
 	// us previous log entries for us to fix our log.
 	return &sgrpc.AppendEntryResponse{
@@ -529,6 +551,7 @@ func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMess
 	server.resetElectionTimer()
 	server.becomeCandidate()
 	server.changeTerm(int(in.Term), true)
+	server.sendVoteReply(int(in.ServerIndex))
 	return &sgrpc.RequestVoteResponse{
 		Term:        int64(server.currentTerm),
 		VoteGranted: true,
@@ -547,6 +570,7 @@ func (server *Server) replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigh
 func (server *Server) changeTerm(term int, votedInThisTerm bool) {
 	server.currentTerm = term
 	server.votedInThisTerm = votedInThisTerm
+	server.updateServerTerm()
 }
 
 // Retrieve log info
@@ -652,10 +676,10 @@ func (server *Server) sendAppendEntries() {
 	logLengthWhenIssuingAppendEntries := len(server.log)
 	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
 	appendEntryMessage := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
-		PrevLogIndex:  prevLogIndex,
-		PrevLogTerm:   prevLogTerm,
+		Term:               int64(server.currentTerm),
+		LeaderAddressIndex: int64(server.serverAddressIndex),
+		PrevLogIndex:       prevLogIndex,
+		PrevLogTerm:        prevLogTerm,
 		Entry: &sgrpc.LogEntry{
 			Term:    int64(lastLog.Term),
 			Index:   int64(lastLog.Index),
@@ -696,9 +720,11 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 
 		grpcClient := sgrpc.NewServerServiceClient(conn)
 
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(electionTimeoutTime/8))
 		defer cancel()
 
+		server.sendHeartbeat(serverIndex)
+		time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
 		if err != nil {
 			fmt.Println(err)
@@ -733,9 +759,10 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 		}
 		defer conn.Close()
 		grpcClient := sgrpc.NewServerServiceClient(conn)
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(electionTimeoutTime/8))
 		defer cancel()
 
+		server.sendAppendEntry(serverIndex)
 		appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
 		if err != nil {
 			fmt.Println(err)
