@@ -525,6 +525,7 @@ func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMess
 
 	// Voters term is higher than candidates
 	if int(in.Term) < server.currentTerm {
+		server.sendVoteReply(int(in.ServerIndex), false)
 		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
@@ -533,6 +534,7 @@ func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMess
 
 	// Voters log is more up-to-date than the candidates log
 	if int(in.LastLogTerm) < lastLog.Term || (int(in.LastLogTerm) == lastLog.Term && int(in.LastLogIndex) < lastLog.Index) {
+		server.sendVoteReply(int(in.ServerIndex), false)
 		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
@@ -541,6 +543,7 @@ func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMess
 
 	// Voter already voted in this term
 	if server.votedInThisTerm {
+		server.sendVoteReply(int(in.ServerIndex), false)
 		return &sgrpc.RequestVoteResponse{
 			Term:        int64(server.currentTerm),
 			VoteGranted: false,
@@ -551,7 +554,7 @@ func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMess
 	server.resetElectionTimer()
 	server.becomeCandidate()
 	server.changeTerm(int(in.Term), true)
-	server.sendVoteReply(int(in.ServerIndex))
+	server.sendVoteReply(int(in.ServerIndex), true)
 	return &sgrpc.RequestVoteResponse{
 		Term:        int64(server.currentTerm),
 		VoteGranted: true,

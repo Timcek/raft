@@ -806,15 +806,16 @@ var sendNewVoteMessage = function (to, from) {
 }
 
 // to and from begin with 1
-var sendNewVoteReplyMessage = function (to, from) {
+var sendNewVoteReplyMessage = function (to, from, granted) {
   var message = {
     from: from,
     to: to,
     type: 'RequestVote',
     term: 1,
+    granted: granted,
     lastLogTerm: 0,
     lastLogIndex: 0,
-    direction: "request",
+    direction: "reply",
     sendTime: state.current.time,
     //this represents 15ms travel time
     recvTime: state.current.time + 15000,
@@ -823,14 +824,38 @@ var sendNewVoteReplyMessage = function (to, from) {
 }
 
 // to and from begin with 1
-var sendNewAppendEntryMessage = function (to, from) {
+var sendNewAppendEntryMessage = function (to, from, entries) {
   if (state.current.servers[from-1].state === 'candidate' ) {
     state.current.servers[from-1].state = 'follower'
   }
   var message = {
     from: from,
     to: to,
-    type: 'AppendEntry',
+    type: 'AppendEntries',
+    direction: 'request',
+    entries: entries,
+    term: 1,
+    sendTime: state.current.time,
+    //this represents 15ms travel time
+    recvTime: state.current.time + 15000,
+    prevIndex: 0,
+    prevTerm: 0,
+    commitIndex: 0
+  }
+  state.current.messages.push(message)
+}
+
+var sendNewAppendEntryMessageReply = function (to, from, success) {
+  if (state.current.servers[from-1].state === 'candidate' ) {
+    state.current.servers[from-1].state = 'follower'
+  }
+  console.log("safsfsaf")
+  var message = {
+    from: from,
+    to: to,
+    type: 'AppendEntries',
+    direction: 'reply',
+    success: success,
     term: 1,
     sendTime: state.current.time,
     //this represents 15ms travel time
@@ -916,19 +941,19 @@ function connect(url) {
         sendNewVoteMessage(parsedMessage.to+1, parsedMessage.from+1);
         break;
       case 3:
-        sendNewVoteReplyMessage(parsedMessage.to+1, parsedMessage.from+1);
+        sendNewVoteReplyMessage(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.granted);
         break;
       case 4:
-        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1);
+        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1, []);
         break;
       case 5:
-        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1);
+        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success);
         break;
       case 6:
-        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1);
+        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1, []);
         break;
       case 7:
-        sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1);
+        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success);
         break;
       case 8:
         becomeLeader(parsedMessage.serverIndex);

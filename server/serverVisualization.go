@@ -22,6 +22,8 @@ type Message struct {
 	Action        int    `json:"action"`
 	From          int    `json:"from"`
 	To            int    `json:"to"`
+	Granted       bool   `json:"granted"`
+	Success       bool   `json:"success"`
 	ServerIndex   int    `json:"serverIndex"`
 	TimeoutLength int    `json:"timeoutLength"`
 	Term          int    `json:"term"`
@@ -91,12 +93,13 @@ func (server *Server) sendVoteRequest(to int) {
 	messages <- message
 }
 
-func (server *Server) sendVoteReply(to int) {
+func (server *Server) sendVoteReply(to int, granted bool) {
 	//TODO tudi tole še popravi
 	message := Message{
-		Action: ACTION_SEND_VOTE_REPLY,
-		From:   server.serverAddressIndex,
-		To:     to,
+		Action:  ACTION_SEND_VOTE_REPLY,
+		From:    server.serverAddressIndex,
+		To:      to,
+		Granted: granted,
 	}
 	messages <- message
 }
@@ -111,13 +114,14 @@ func (server *Server) sendHeartbeat(to int) {
 	messages <- message
 }
 
-func (server *Server) sendHeartbeatReply(to int, successfull bool) {
+func (server *Server) sendHeartbeatReply(to int, success bool) {
 	//TODO tole je potrebno še pravilno implementirati tale successfull
 	//in pa preglej če te stvari delujejo pravilno tudi v javascriptu
 	message := Message{
-		Action: ACTION_SEND_HEARTBEAT_REPLY,
-		From:   server.serverAddressIndex,
-		To:     to,
+		Action:  ACTION_SEND_HEARTBEAT_REPLY,
+		From:    server.serverAddressIndex,
+		To:      to,
+		Success: success,
 	}
 	messages <- message
 }
@@ -132,12 +136,13 @@ func (server *Server) sendAppendEntry(to int) {
 	messages <- message
 }
 
-func (server *Server) sendAppendEntryReply(to int) {
+func (server *Server) sendAppendEntryReply(to int, success bool) {
 	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
-		Action: ACTION_SEND_APPEND_ENTRY_REPLY,
-		From:   server.serverAddressIndex,
-		To:     to,
+		Action:  ACTION_SEND_APPEND_ENTRY_REPLY,
+		From:    server.serverAddressIndex,
+		To:      to,
+		Success: success,
 	}
 	messages <- message
 }
