@@ -1,0 +1,3 @@
+[submodule "viz/bootstrap-slider"]
+	path = viz/bootstrap-slider
+	url = git@github.com:seiyria/bootstrap-slider.git
