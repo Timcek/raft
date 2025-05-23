@@ -221,9 +221,9 @@ render.clock = function() {
 var serverActions = [
   ['stop', raft.stop],
   ['resume', raft.resume],
-  ['restart', raft.restart],
-  ['time out', raft.timeout],
-  ['request', raft.clientRequest],
+  ['restart', restart],
+  ['time out', timeout],
+  ['request', clientRequest],
 ];
 
 var messageActions = [
@@ -806,7 +806,7 @@ var sendNewVoteMessage = function (to, from) {
 }
 
 // to and from begin with 1
-var sendNewVoteReplyMessage = function (to, from, granted) {
+var sendNewVoteReplyMessage = function (to, from, granted, serverState) {
   var message = {
     from: from,
     to: to,
@@ -821,6 +821,7 @@ var sendNewVoteReplyMessage = function (to, from, granted) {
     recvTime: state.current.time + 15000,
   }
   state.current.messages.push(message)
+  state.current.servers[from-1].state = serverState
 }
 
 // to and from begin with 1
@@ -845,11 +846,10 @@ var sendNewAppendEntryMessage = function (to, from, entries) {
   state.current.messages.push(message)
 }
 
-var sendNewAppendEntryMessageReply = function (to, from, success) {
+var sendNewAppendEntryMessageReply = function (to, from, success, serverState) {
   if (state.current.servers[from-1].state === 'candidate' ) {
     state.current.servers[from-1].state = 'follower'
   }
-  console.log("safsfsaf")
   var message = {
     from: from,
     to: to,
@@ -866,31 +866,12 @@ var sendNewAppendEntryMessageReply = function (to, from, success) {
     commitIndex: 0
   }
   state.current.messages.push(message)
+  state.current.servers[from-1].state = serverState
 }
 
 //index begins with 0
 var serverResetElectionTimeout = function (serverIndex, timeoutTime) {
   state.current.servers[serverIndex].electionAlarm = state.current.time + timeoutTime
-}
-
-// serverIndex begins with 0
-var appendToServerLog = function (serverIndex) {
-  state.current.servers[serverIndex].log.push({
-    type: 'AppendEntry',
-    term: 1,
-    sendTime: state.current.time,
-    //this represents 15ms travel time
-    recvTime: state.current.time + 15000,
-    prevIndex: 0,
-    prevTerm: 0,
-    entries: null,
-    commitIndex: 0
-  })
-}
-
-// serverIndex begins with 0
-var updateCommitIndex = function (serverIndex, commitIndex) {
-  state.current.servers[serverIndex].commitIndex = commitIndex
 }
 
 // serverIndex begins with 0
@@ -906,32 +887,51 @@ var grantVote = function (serverIndex, voteFrom) {
 
 var updateServerTerm = function (serverIndex, term) {
   // voteGranted starts with 1
-  console.log(term)
   state.current.servers[serverIndex].term = term
 }
 
+var appendToLog = function (serverIndex, term, value) {
+  // voteGranted starts with 1
+  state.current.servers[serverIndex].log.push({
+    term: term,
+    value: value
+  })
+}
+
+// serverIndex begins with 0
+
+var updateCommitIndex = function (serverIndex, commitIndex) {
+  state.current.servers[serverIndex].commitIndex = commitIndex
+}
+
+var clientRequest = function(model, server) {
+  if (server.state == 'leader') {
+    ws[server.id-1].send(JSON.stringify({method: "request"}));
+  }
+};
 
 
+var timeout = function(model, server) {
+  server.state = 'follower';
+  server.electionAlarm = 0;
+  ws[server.id-1].send(JSON.stringify({method: "timeout"}));
+};
 
+var restart = function(model, server) {
+  server.state = 'follower'
+  ws[server.id-1].send(JSON.stringify({method: "restart"}));
+};
 
-
-
-
-
-
-
-
-
-let ws;
+let ws = [];
 
 function connect(url) {
-  ws = new WebSocket(url);
+  let newWS = new WebSocket(url);
 
-  ws.onopen = function() {
+  newWS.onopen = function() {
     console.log("Connected to WebSocket server");
   };
 
-  ws.onmessage = function(message) {
+  newWS.onmessage = function(message) {
     var parsedMessage = JSON.parse(message.data)
     switch (parsedMessage.action) {
       case 1:
@@ -941,19 +941,19 @@ function connect(url) {
         sendNewVoteMessage(parsedMessage.to+1, parsedMessage.from+1);
         break;
       case 3:
-        sendNewVoteReplyMessage(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.granted);
+        sendNewVoteReplyMessage(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.granted, parsedMessage.serverState);
         break;
       case 4:
         sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1, []);
         break;
       case 5:
-        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success);
+        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success, parsedMessage.serverState);
         break;
       case 6:
         sendNewAppendEntryMessage(parsedMessage.to+1, parsedMessage.from+1, []);
         break;
       case 7:
-        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success);
+        sendNewAppendEntryMessageReply(parsedMessage.to+1, parsedMessage.from+1, parsedMessage.success, parsedMessage.serverState);
         break;
       case 8:
         becomeLeader(parsedMessage.serverIndex);
@@ -964,17 +964,24 @@ function connect(url) {
       case 10:
         updateServerTerm(parsedMessage.serverIndex, parsedMessage.term);
         break;
+      case 11:
+        appendToLog(parsedMessage.serverIndex, parsedMessage.term, parsedMessage.data);
+        break;
+      case 12:
+        updateCommitIndex(parsedMessage.serverIndex, parsedMessage.commitIndex);
+        break;
     }
   };
 
-  ws.onclose = function() {
+  newWS.onclose = function() {
     console.log("WebSocket connection closed, retrying...");
     setTimeout(connect, 1000); // Reconnect after 1 second
   };
 
-  ws.onerror = function(error) {
+  newWS.onerror = function(error) {
     console.error("WebSocket error:", error);
   };
+  ws.push(newWS)
 }
 
 connect("ws://localhost:60000/serverEvents");
@@ -982,3 +989,14 @@ connect("ws://localhost:60001/serverEvents");
 connect("ws://localhost:60002/serverEvents");
 connect("ws://localhost:60003/serverEvents");
 connect("ws://localhost:60004/serverEvents");
+
+let previousValue = 100
+window.setInterval(function () {
+  let value = $("#speedSlider #tooltip .tooltip-inner").html().replace("x", "").split("/")
+  if (Number(value[1]) !== previousValue) {
+    previousValue = Number(value[1])
+    ws.forEach((element) => {
+      element.send(JSON.stringify({method: "speedChange", value: previousValue}));
+    })
+  }
+}, 100)
