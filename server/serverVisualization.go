@@ -25,6 +25,7 @@ const ACTION_GRANT_VOTE = 9
 const ACTION_UPDATE_SERVER_TERM = 10
 const ACTION_APPEND_TO_LOG = 11
 const ACTION_COMMIT_LOG = 12
+const ACTION_UPDATE_NEXT_INDEX = 13
 
 type Message struct {
 	Action        int    `json:"action"`
@@ -38,6 +39,8 @@ type Message struct {
 	Term          int    `json:"term"`
 	Data          string `json:"data"`
 	CommitIndex   int    `json:"commitIndex"`
+	NextIndex     int    `json:"nextIndex"`
+	LeaderIndex   int    `json:"leaderIndex"`
 }
 
 func (server *Server) startServerWebSocket(serverIndex int) {
@@ -303,6 +306,16 @@ func (server *Server) commitLog() {
 		Action:      ACTION_COMMIT_LOG,
 		ServerIndex: server.serverAddressIndex,
 		CommitIndex: server.commitIndex + 1,
+	}
+	server.messages <- message
+}
+
+func (server *Server) sendNextIndex(index int) {
+	message := Message{
+		Action:      ACTION_UPDATE_NEXT_INDEX,
+		NextIndex:   server.nextIndex[index],
+		LeaderIndex: server.serverAddressIndex,
+		To:          index,
 	}
 	server.messages <- message
 }

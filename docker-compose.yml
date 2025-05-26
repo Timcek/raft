@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  raft-app:
+    image: raft_app
+    container_name: raft-app
+    ports:
+      - "8081:8081"
+      - "60000:60000"
+      - "60001:60001"
+      - "60002:60002"
+      - "60003:60003"
+      - "60004:60004"
+    build:
+      context: .

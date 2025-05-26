@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"raftImplementation/raft/log"
 	"raftImplementation/raft/server"
 	"strconv"
 )
 
 type Config struct {
-	ElectionTimeoutTime int `json:"electionTimeoutTime"`
-	NumberOfServers     int `json:"numberOfServers"`
+	ElectionTimeoutTime int             `json:"electionTimeoutTime"`
+	NumberOfServers     int             `json:"numberOfServers"`
+	ServerLogs          [][]log.Message `json:"serverLogs"`
 }
 
 // Function used to start the server. The function gets called from main.go by starting a completely new OS process
@@ -31,5 +33,9 @@ func main() {
 		addresses[i] = fmt.Sprintf("127.0.0.1:5000%d", i)
 	}
 	serverIndex, _ := strconv.Atoi(os.Args[1])
-	server.CreateServer(serverIndex, addresses)
+	if len(configuration.ServerLogs) > serverIndex {
+		server.CreateServer(serverIndex, addresses, configuration.ServerLogs[serverIndex])
+	} else {
+		server.CreateServer(serverIndex, addresses, []log.Message{})
+	}
 }

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"raftImplementation/raft/log"
 	"strconv"
 	"syscall"
 	"time"
@@ -20,14 +20,15 @@ func main() {
 }
 
 type Configuration struct {
-	ElectionTimeoutTime int `json:"electionTimeoutTime"`
-	NumberOfServers     int `json:"numberOfServers"`
+	ElectionTimeoutTime int             `json:"electionTimeoutTime"`
+	NumberOfServers     int             `json:"numberOfServers"`
+	ServerLogs          [][]log.Message `json:"serverLogs"`
 }
 
 func handleRequests() {
 	http.Handle("/startSimulation", http.HandlerFunc(startSimulation))
 	http.Handle("/stopSimulation", http.HandlerFunc(stopSimulation))
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	fmt.Println(http.ListenAndServe(":8081", nil))
 }
 
 var processes []*os.Process
@@ -77,7 +78,7 @@ func startServers(configuration Configuration, content []byte) {
 		}
 		defer file.Close()
 
-		cmd := exec.Command("go", "run", "runServer.go", strconv.Itoa(i))
+		cmd := exec.Command("go", "run", "./runServer/runServer.go", strconv.Itoa(i))
 		cmd.Stdin = bytes.NewReader(content)
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setpgid: true,
@@ -87,7 +88,7 @@ func startServers(configuration Configuration, content []byte) {
 		cmd.Start()
 		processes = append(processes, cmd.Process)
 
-		fmt.Println("Started server nod on localhost:5000" + strconv.Itoa(i) + ". Process pid of the server is " + strconv.Itoa(cmd.Process.Pid))
+		fmt.Println("Started server node on localhost:6000" + strconv.Itoa(i) + ". Process pid of the server is " + strconv.Itoa(cmd.Process.Pid))
 	}
 }
 

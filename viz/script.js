@@ -927,6 +927,10 @@ var restart = function(model, server) {
   ws[server.id-1].send(JSON.stringify({method: "restart"}));
 };
 
+var updateNextIndex = function (leaderIndex, serverIndex, nextIndex) {
+  state.current.servers[leaderIndex].nextIndex[serverIndex] = nextIndex
+}
+
 let ws = [];
 
 function connect(url) {
@@ -975,6 +979,9 @@ function connect(url) {
       case 12:
         updateCommitIndex(parsedMessage.serverIndex, parsedMessage.commitIndex);
         break;
+      case 13:
+        updateNextIndex(parsedMessage.leaderIndex, parsedMessage.to+1, parsedMessage.nextIndex+1);
+        break;
     }
   };
 
@@ -1006,7 +1013,7 @@ function connectToWebSockets() {
     for (let i = 0; i < NUM_SERVERS; i++) {
       connect("ws://localhost:6000" + i + "/serverEvents");
     }
-  }, 100)
+  }, 150)
 }
 
 let startSimulation = false

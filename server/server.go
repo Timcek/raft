@@ -72,23 +72,41 @@ type Server struct {
 
 // Server constructor
 
-func CreateServer(addressIndex int, addresses []string) {
+func CreateServer(addressIndex int, addresses []string, log []log.Message) {
 	// Create server with starting values
 	server := Server{}
-	server.currentTerm = 0
 	server.votedInThisTerm = false
 	server.serverState = FOLLOWER
-
 	// We initialize commit index to -1, because the server log is empty and there is zero commited entries (when the
 	// value is 0 this means that the first entry is commited)
 	server.commitIndex = -1
 	server.messages = make(chan Message)
 	server.serverAddressIndex = addressIndex
 	go server.startServerWebSocket(server.serverAddressIndex)
-	time.Sleep(3 * time.Second)
+	server.currentTerm = 1
+	server.updateServerTerm()
 	server.serverAddresses = addresses
 	server.createElectionTimer()
 	server.nextIndex = make([]int, len(server.serverAddresses))
+
+	for _, value := range log {
+		lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
+		if int(lastLogTerm) != server.currentTerm {
+			lastLogIndex = 0
+		}
+		newLog := sgrpc.LogEntry{
+			Term:    int64(server.currentTerm),
+			Index:   int64(lastLogIndex) + 1,
+			Message: value.Msg,
+		}
+		server.appendToLog(&newLog)
+		if value.Commited {
+			server.commitIndex++
+		}
+	}
+	server.commitAllEntriesUpToCommitIndex(server.commitIndex)
+	server.initializeNextIndex()
+	server.commitLog()
 
 	file, err := os.Create("output" + strconv.Itoa(addressIndex) + ".txt")
 	defer file.Close()
@@ -312,6 +330,7 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGr
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
 	serverLogLength := server.nextIndex[serverIndex] + 1
+	server.sendNextIndex(serverIndex)
 	wg.Add(1)
 	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength, wg)
 }
@@ -362,6 +381,7 @@ func (server *Server) initializeNextIndex() {
 	// same, they will get fixed with appendEntries and heartbeats
 	for index, _ := range server.nextIndex {
 		server.nextIndex[index] = logLength
+		server.sendNextIndex(index)
 	}
 }
 
@@ -432,7 +452,6 @@ func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage) (*
 
 func (server *Server) receivedHeartbeatWithNewerLog(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
 	server.sendHeartbeatReply(leaderAddressIndex, false)
-	time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: false,
@@ -441,7 +460,6 @@ func (server *Server) receivedHeartbeatWithNewerLog(leaderAddressIndex int) *sgr
 
 func (server *Server) receivedValidHeartbeat(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
 	server.sendHeartbeatReply(leaderAddressIndex, true)
-	time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 	return &sgrpc.AppendEntryResponse{
 		Term:    int64(server.currentTerm),
 		Success: true,
@@ -685,6 +703,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.appendToLog(&newLog)
 	// Increase the number of logs replicated on this server
 	server.nextIndex[server.serverAddressIndex]++
+	server.sendNextIndex(server.serverAddressIndex)
 
 	server.resetHeartbeat()
 	server.sendAppendEntries()
@@ -748,6 +767,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 		server.sendHeartbeat(serverIndex)
 		time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
+		time.Sleep(time.Duration(math.Pow(jsVisualizationSpeed, -1)) * 15 * time.Millisecond)
 		if err != nil {
 			fmt.Println(err)
 		} else {
@@ -766,6 +786,7 @@ func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryRespon
 	} else if !response.Success {
 		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
+		server.sendNextIndex(serverIndex)
 	}
 }
 
@@ -804,6 +825,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex]++
+		server.sendNextIndex(serverIndex)
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term
@@ -812,6 +834,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	} else if !appendEntryResponse.Success {
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
+		server.sendNextIndex(serverIndex)
 	}
 }
 
