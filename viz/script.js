@@ -16,6 +16,10 @@ var record;
 var replay;
 
 var NUM_SERVERS = 5;
+const params = new URLSearchParams(window.location.search);
+if (params.get("num")) {
+  NUM_SERVERS = parseInt(params.get("num"), 10)
+}
 var ELECTION_TIMEOUT = 200000;
 var MIN_RPC_LATENCY = 10000;
 var MAX_RPC_LATENCY = 15000;
@@ -56,12 +60,14 @@ var SVG = function(tag) {
 
 playback = function() {
   var paused = false;
-  var pause = function() {
+  var pause = function(hidePauseSign) {
     paused = true;
     $('#time-icon')
       .removeClass('glyphicon-time')
       .addClass('glyphicon-pause');
-    $('#pause').attr('class', 'paused');
+    if (hidePauseSign !== true) {
+      $('#pause').attr('class', 'paused');
+    }
     render.update();
   };
   var resume = function() {
@@ -136,7 +142,6 @@ var messageModal;
 
 state.current.servers.forEach(function (server) {
   var s = serverSpec(server.id);
-  console.log("klasfjasklfjkl")
   $('#servers', svg).append(
     SVG('g')
       .attr('id', 'server-' + server.id)
@@ -984,12 +989,6 @@ function connect(url) {
   ws.push(newWS)
 }
 
-connect("ws://localhost:60000/serverEvents");
-connect("ws://localhost:60001/serverEvents");
-connect("ws://localhost:60002/serverEvents");
-connect("ws://localhost:60003/serverEvents");
-connect("ws://localhost:60004/serverEvents");
-
 let previousValue = 100
 window.setInterval(function () {
   let value = $("#speedSlider #tooltip .tooltip-inner").html().replace("x", "").split("/")
@@ -1000,3 +999,69 @@ window.setInterval(function () {
     })
   }
 }, 100)
+
+
+function connectToWebSockets() {
+  setTimeout(() => {
+    for (let i = 0; i < NUM_SERVERS; i++) {
+      connect("ws://localhost:6000" + i + "/serverEvents");
+    }
+  }, 100)
+}
+
+let startSimulation = false
+
+document.querySelector('.upload').addEventListener('submit', function (e) {
+  // Stops form from submitting, because we do not want the page to reload but only issue the request to the backend.
+  e.preventDefault()
+  stopSimulation()
+  setTimeout(() => {
+    let file = e.target.uploadFile.files[0]
+    let formData = new FormData()
+    formData.append('file', file)
+
+    //Send configuration file to the backend
+    fetch('http://localhost:8081/startSimulation', {
+      method: "POST",
+      body: formData
+    })
+    startSimulation = true
+    const reader = new FileReader()
+    reader.onload = function (e) {
+      const contents = event.target.result;
+      try {
+        const json = JSON.parse(contents)
+        window.location.href = window.location.href.split("?")[0] + "?num=" + json.numberOfServers + "&start=true"
+      } catch (err) {
+        console.log("Invalid JSON:", err)
+      }
+    }
+    if (file) {
+      reader.readAsText(file)
+    } else {
+      window.location.href = window.location.href.split("?")[0] + "?start=true"
+    }
+  }, 1000)
+})
+
+setTimeout(() => {
+  playback.pause(true)
+
+  if (params.get("start") === 'true') {
+    connectToWebSockets()
+    playback.resume()
+  }
+  history.pushState(null, '', window.location.href.split("html")[0] + "html")
+}, 40)
+
+window.addEventListener('beforeunload', function (event) {
+  stopSimulation()
+})
+
+function stopSimulation() {
+  if (!startSimulation) {
+    fetch('http://localhost:8081/stopSimulation', {
+      method: "POST"
+    })
+  }
+}

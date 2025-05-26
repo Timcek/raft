@@ -119,6 +119,7 @@ func (server *Server) createElectionTimer() {
 	randomNum := rand.Intn(electionTimeoutTime/2) + electionTimeoutTime/2
 	server.electionTimer = time.NewTimer(time.Millisecond * time.Duration(randomNum))
 	server.electionTime = time.Now().Add(time.Millisecond * time.Duration(randomNum))
+	server.sendElectionTimeoutChange(randomNum)
 	go func() {
 		for true {
 			<-server.electionTimer.C
