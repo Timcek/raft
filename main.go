@@ -28,6 +28,8 @@ type Configuration struct {
 func handleRequests() {
 	http.Handle("/startSimulation", http.HandlerFunc(startSimulation))
 	http.Handle("/stopSimulation", http.HandlerFunc(stopSimulation))
+	http.Handle("/stopServer", http.HandlerFunc(stopServer))
+	http.Handle("/resumeServer", http.HandlerFunc(resumeServer))
 	fmt.Println(http.ListenAndServe(":8081", nil))
 }
 
@@ -56,7 +58,7 @@ func processConfigFile(r *http.Request) ([]byte, Configuration) {
 		io.Copy(&buf, configFile)
 		content = []byte(buf.String())
 	} else {
-		defaultConfigFile := "configuration.json"
+		defaultConfigFile := "defaultConfiguration.json"
 		file, err := os.Open(defaultConfigFile)
 		if err != nil {
 			panic(err)
@@ -102,4 +104,38 @@ func stopSimulation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	processes = []*os.Process{}
+}
+
+type Data struct {
+	ServerIndex int
+}
+
+func stopServer(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Access-Control-Allow-Headers, Origin,Accept, X-Requested-With, Content-Type, Access-Control-Request-Method, Access-Control-Request-Headers")
+	postData := &Data{}
+	err := json.NewDecoder(r.Body).Decode(postData)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	serverIndex := postData.ServerIndex
+	fmt.Println("Stopping server ", serverIndex)
+	cmd := exec.Command("pkill", "-STOP", "-P", strconv.Itoa(processes[serverIndex].Pid))
+	cmd.Start()
+}
+
+func resumeServer(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Access-Control-Allow-Headers, Origin,Accept, X-Requested-With, Content-Type, Access-Control-Request-Method, Access-Control-Request-Headers")
+	postData := &Data{}
+	err := json.NewDecoder(r.Body).Decode(postData)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	serverIndex := postData.ServerIndex
+	fmt.Println("Resuming server ", serverIndex)
+	cmd := exec.Command("pkill", "-CONT", "-P", strconv.Itoa(processes[serverIndex].Pid))
+	cmd.Start()
 }

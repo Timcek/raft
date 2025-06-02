@@ -47,16 +47,23 @@ func (server *Server) startServerWebSocket(serverIndex int) {
 
 	fmt.Println("Listening on websocket...")
 	http.HandleFunc("/serverEvents", server.wsHandler)
-	//TODO spremeniti je potrebno port
-	err := http.ListenAndServe(":6000"+fmt.Sprintf("%v", serverIndex), nil)
+	err := http.ListenAndServe("0.0.0.0:6000"+fmt.Sprintf("%v", serverIndex), nil)
 	if err != nil {
 		panic("ListenAndServe: " + err.Error())
 	}
 }
 
+// Upgrader is used to upgrade HTTP connections to WebSocket connections. visualisation
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
 // Takes massages from messages channels and sends them over web socket.
 func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	// Upgrade the HTTP connection to a WebSocket connection
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println("Error upgrading:", err)
@@ -146,18 +153,17 @@ func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 					server.heartbeatTime = time.Now().Add(time.Millisecond * time.Duration(timeProcentage*float64(electionTimeoutTime/4)))
 				}
 				fmt.Println(jsonMessage.Value)
+			} else if jsonMessage.Method == "stopServer" {
+				server.stopElectionTimer()
+			} else if jsonMessage.Method == "resumeServer" {
+				if server.serverState != LEADER {
+					server.resetElectionTimer()
+				}
 			}
 		}
 	}()
 
 	wg.Wait()
-}
-
-// Upgrader is used to upgrade HTTP connections to WebSocket connections. visualisation
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
 }
 
 func (server *Server) sendElectionTimeoutChange(time int) {

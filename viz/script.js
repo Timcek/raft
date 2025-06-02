@@ -67,16 +67,24 @@ playback = function() {
       .addClass('glyphicon-pause');
     if (hidePauseSign !== true) {
       $('#pause').attr('class', 'paused');
+      state.current.servers.forEach(function (server) {
+        stopServer(null, server)
+      })
     }
     render.update();
   };
-  var resume = function() {
+  var resume = function(firstStart) {
     if (paused) {
       paused = false;
       $('#time-icon')
         .removeClass('glyphicon-pause')
         .addClass('glyphicon-time');
       $('#pause').attr('class', 'resumed');
+      if (firstStart !== true) {
+        state.current.servers.forEach(function (server) {
+         resumeServer(null, server)
+        })
+      }
       render.update();
     }
   };
@@ -224,8 +232,8 @@ render.clock = function() {
 };
 
 var serverActions = [
-  ['stop', raft.stop],
-  ['resume', raft.resume],
+  ['stop', stopServer],
+  ['resume', resumeServer],
   ['restart', restart],
   ['time out', timeout],
   ['request', clientRequest],
@@ -922,6 +930,30 @@ var timeout = function(model, server) {
   ws[server.id-1].send(JSON.stringify({method: "timeout"}));
 };
 
+var stopServer = function(model, server) {
+  server.state = 'stopped';
+  server.electionAlarm = 0;
+  ws[server.id-1].send(JSON.stringify({method: "stopServer"}));
+  fetch('http://localhost:8081/stopServer', {
+    method: "POST",
+    body: JSON.stringify({
+      serverIndex: server.id-1
+    })
+  })
+}
+
+var resumeServer = function(model, server) {
+  server.state = 'follower';
+  server.electionAlarm = 0;
+  ws[server.id-1].send(JSON.stringify({method: "resumeServer"}));
+  fetch('http://localhost:8081/resumeServer', {
+    method: "POST",
+    body: JSON.stringify({
+      serverIndex: server.id-1
+    })
+  })
+}
+
 var restart = function(model, server) {
   server.state = 'follower'
   ws[server.id-1].send(JSON.stringify({method: "restart"}));
@@ -933,11 +965,17 @@ var updateNextIndex = function (leaderIndex, serverIndex, nextIndex) {
 
 let ws = [];
 
-function connect(url) {
+let numOfConnected = 0;
+
+function connect(url, index) {
   let newWS = new WebSocket(url);
 
   newWS.onopen = function() {
     console.log("Connected to WebSocket server");
+    numOfConnected++;
+    if (numOfConnected === 1) {
+      playback.resume(true)
+    }
   };
 
   newWS.onmessage = function(message) {
@@ -987,13 +1025,14 @@ function connect(url) {
 
   newWS.onclose = function() {
     console.log("WebSocket connection closed, retrying...");
-    setTimeout(connect, 1000); // Reconnect after 1 second
+    setTimeout(connect, 100, url, index, true); // Reconnect after 100ms
   };
 
   newWS.onerror = function(error) {
     console.error("WebSocket error:", error);
+    ws[index].close()
   };
-  ws.push(newWS)
+  ws[index] = newWS
 }
 
 let previousValue = 100
@@ -1011,7 +1050,8 @@ window.setInterval(function () {
 function connectToWebSockets() {
   setTimeout(() => {
     for (let i = 0; i < NUM_SERVERS; i++) {
-      connect("ws://localhost:6000" + i + "/serverEvents");
+      ws.push(null)
+      connect("ws://localhost:6000" + i + "/serverEvents", i);
     }
   }, 150)
 }
@@ -1053,13 +1093,14 @@ document.querySelector('.upload').addEventListener('submit', function (e) {
 
 setTimeout(() => {
   playback.pause(true)
+}, 40)
 
+setTimeout(() => {
   if (params.get("start") === 'true') {
     connectToWebSockets()
-    playback.resume()
   }
   history.pushState(null, '', window.location.href.split("html")[0] + "html")
-}, 40)
+}, 200)
 
 window.addEventListener('beforeunload', function (event) {
   stopSimulation()
