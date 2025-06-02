@@ -33,6 +33,11 @@ go run main.go <configuration_file>
 
 Checkout the visualization branch.
 
+Then move to viz folder and execute the following command. This clones the submodules necessary for running the visualization:
+```
+git submodule update --init --recursive
+```
+
 I recommend you to run the program using docker containers (The program uses OS processes for creating server nodes and 
 web sockets for communicating with frontend. This can cause some problems when killing the process, that is why it is 
 better to use containers since the program is isolated from the host machine.). Docker compose file is located at the root 
