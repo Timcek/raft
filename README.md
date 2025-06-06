@@ -53,45 +53,72 @@ container for the first time it can take some time for the visualization to begi
 start working. This happens because for some reason Docker takes some time to create new processes inside the container).
 
 If you want to create a custom visualization configuration you need to select a JSON file inside "Izberi datoteko" field and
-press "Začni simulacijo". Below is an example of a JSON file for 5 servers configuration:
+press "Začni simulacijo". Below is an example of a JSON file for 5 servers configuration. Every configuration must satisfy
+the next conditions:
+- At the top of the file there must be a properties for number of servers and the next term. The nextTerm value should represent
+  the upcoming term number. For example, if the highest term in serverLogs is 5, then nextTerm should be set to 6 or higher.
+- The serverLogs property must be an array of arrays. Each inner array represents the log entries for e server. Each
+  log entry should be an object with the following properties:
+    - Commited: indicates whether the log entry is commited.
+    - Term: Specifies the term in which the entry was created.
+    - Index: Should start at 1 and reset to 1 every time the term increases.
 
 ```
 {
-    "numberOfServers": 5,
-    "serverLogs": 
+  "numberOfServers": 5,
+  "nextTerm": 4,
+  "serverLogs":
+  [
     [
-        [
-            {
-                "msg": "test",
-                "commited": true
-            },
-            {
-                "msg": "sss",
-                "commited": true
-            }
-        ], 
-        [
-            {
-                "msg": "test",
-                "commited": true
-            }, 
-            {
-                "msg": "sss",
-                "commited": true
-            }
-        ], 
-        [
-            {
-                "msg": "test",
-                "commited": true
-            },
-            {
-                "msg": "sss",
-                "commited": true
-            }
-        ],
-        [],
-        []
+      {
+        "commited": true,
+        "term": 1,
+        "index": 1
+      },
+      {
+        "commited": false,
+        "term": 2,
+        "index": 1
+      }
+    ],
+    [
+      {
+        "commited": true,
+        "term": 1,
+        "index": 1
+      },
+      {
+        "commited": false,
+        "term": 2,
+        "index": 1
+      }
+    ],
+    [
+      {
+        "commited": true,
+        "term": 1,
+        "index": 1
+      }
+    ],
+    [
+      {
+        "commited": true,
+        "term": 1,
+        "index": 1
+      }
+    ],
+    [
+      {
+        "commited": true,
+        "term": 1,
+        "index": 1
+      },
+      {
+        "commited": false,
+        "term": 3,
+        "index": 1
+      }
     ]
+  ]
 }
 ```
