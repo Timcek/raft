@@ -963,6 +963,11 @@ var updateNextIndex = function (leaderIndex, serverIndex, nextIndex) {
   state.current.servers[leaderIndex].nextIndex[serverIndex] = nextIndex
 }
 
+var deleteFromIndex = function (serverIndex, fromIndex) {
+  console.log(serverIndex)
+  state.current.servers[serverIndex].log.splice(fromIndex)
+}
+
 let ws = [];
 
 let numOfConnected = 0;
@@ -1019,6 +1024,9 @@ function connect(url, index) {
         break;
       case 13:
         updateNextIndex(parsedMessage.leaderIndex, parsedMessage.to+1, parsedMessage.nextIndex+1);
+        break;
+      case 14:
+        deleteFromIndex(parsedMessage.to, parsedMessage.deleteFromIndex);
         break;
     }
   };

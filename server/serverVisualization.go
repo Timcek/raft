@@ -26,21 +26,23 @@ const ACTION_UPDATE_SERVER_TERM = 10
 const ACTION_APPEND_TO_LOG = 11
 const ACTION_COMMIT_LOG = 12
 const ACTION_UPDATE_NEXT_INDEX = 13
+const ACTION_DELETE_FROM_INDEX = 14
 
 type Message struct {
-	Action        int    `json:"action"`
-	From          int    `json:"from"`
-	To            int    `json:"to"`
-	ServerState   string `json:"serverState"`
-	Granted       bool   `json:"granted"`
-	Success       bool   `json:"success"`
-	ServerIndex   int    `json:"serverIndex"`
-	TimeoutLength int    `json:"timeoutLength"`
-	Term          int    `json:"term"`
-	Data          string `json:"data"`
-	CommitIndex   int    `json:"commitIndex"`
-	NextIndex     int    `json:"nextIndex"`
-	LeaderIndex   int    `json:"leaderIndex"`
+	Action          int    `json:"action"`
+	From            int    `json:"from"`
+	To              int    `json:"to"`
+	ServerState     string `json:"serverState"`
+	Granted         bool   `json:"granted"`
+	Success         bool   `json:"success"`
+	ServerIndex     int    `json:"serverIndex"`
+	TimeoutLength   int    `json:"timeoutLength"`
+	Term            int    `json:"term"`
+	Data            string `json:"data"`
+	CommitIndex     int    `json:"commitIndex"`
+	NextIndex       int    `json:"nextIndex"`
+	LeaderIndex     int    `json:"leaderIndex"`
+	DeleteFromIndex int    `json:"deleteFromIndex"`
 }
 
 func (server *Server) startServerWebSocket(serverIndex int) {
@@ -322,6 +324,15 @@ func (server *Server) sendNextIndex(index int) {
 		NextIndex:   server.nextIndex[index],
 		LeaderIndex: server.serverAddressIndex,
 		To:          index,
+	}
+	server.messages <- message
+}
+
+func (server *Server) deleteEtries(fromIndex int) {
+	message := Message{
+		Action:          ACTION_DELETE_FROM_INDEX,
+		DeleteFromIndex: fromIndex,
+		To:              server.serverAddressIndex,
 	}
 	server.messages <- message
 }

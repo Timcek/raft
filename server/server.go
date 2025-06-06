@@ -72,7 +72,7 @@ type Server struct {
 
 // Server constructor
 
-func CreateServer(addressIndex int, addresses []string, log []log.Message) {
+func CreateServer(addressIndex int, addresses []string, log []log.Message, startTerm int) {
 	// Create server with starting values
 	server := Server{}
 	server.votedInThisTerm = false
@@ -83,20 +83,16 @@ func CreateServer(addressIndex int, addresses []string, log []log.Message) {
 	server.messages = make(chan Message)
 	server.serverAddressIndex = addressIndex
 	go server.startServerWebSocket(server.serverAddressIndex)
-	server.currentTerm = 1
+	server.currentTerm = startTerm
 	server.updateServerTerm()
 	server.serverAddresses = addresses
 	server.createElectionTimer()
 	server.nextIndex = make([]int, len(server.serverAddresses))
 
 	for _, value := range log {
-		lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-		if int(lastLogTerm) != server.currentTerm {
-			lastLogIndex = 0
-		}
 		newLog := sgrpc.LogEntry{
-			Term:    int64(server.currentTerm),
-			Index:   int64(lastLogIndex) + 1,
+			Term:    int64(value.Term),
+			Index:   int64(value.Index),
 			Message: value.Msg,
 		}
 		server.appendToLog(&newLog)
@@ -502,6 +498,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 	for position != -1 && !server.log[position].Commited {
 		if server.log[position-1].Term == int(in.PrevLogTerm) && server.log[position-1].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position]
+			server.deleteEtries(position)
 			server.appendToLog(in.Entry)
 			server.becomeFollower(int(in.LeaderAddressIndex))
 			server.commitEntriesOnFollower(commitIndex)

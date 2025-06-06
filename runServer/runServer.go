@@ -11,9 +11,9 @@ import (
 )
 
 type Config struct {
-	ElectionTimeoutTime int             `json:"electionTimeoutTime"`
-	NumberOfServers     int             `json:"numberOfServers"`
-	ServerLogs          [][]log.Message `json:"serverLogs"`
+	NumberOfServers int             `json:"numberOfServers"`
+	NextTerm        int             `json:"nextTerm"`
+	ServerLogs      [][]log.Message `json:"serverLogs"`
 }
 
 // Function used to start the server. The function gets called from main.go by starting a completely new OS process
@@ -34,8 +34,8 @@ func main() {
 	}
 	serverIndex, _ := strconv.Atoi(os.Args[1])
 	if len(configuration.ServerLogs) > serverIndex {
-		server.CreateServer(serverIndex, addresses, configuration.ServerLogs[serverIndex])
+		server.CreateServer(serverIndex, addresses, configuration.ServerLogs[serverIndex], configuration.NextTerm-1)
 	} else {
-		server.CreateServer(serverIndex, addresses, []log.Message{})
+		server.CreateServer(serverIndex, addresses, []log.Message{}, configuration.NextTerm-1)
 	}
 }
