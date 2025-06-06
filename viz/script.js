@@ -964,8 +964,11 @@ var updateNextIndex = function (leaderIndex, serverIndex, nextIndex) {
 }
 
 var deleteFromIndex = function (serverIndex, fromIndex) {
-  console.log(serverIndex)
   state.current.servers[serverIndex].log.splice(fromIndex)
+}
+
+var updateMatchIndex = function (leaderIndex, serverIndex, matchIndex) {
+  state.current.servers[leaderIndex].matchIndex[serverIndex] = matchIndex
 }
 
 let ws = [];
@@ -1027,6 +1030,9 @@ function connect(url, index) {
         break;
       case 14:
         deleteFromIndex(parsedMessage.to, parsedMessage.deleteFromIndex);
+        break;
+      case 15:
+        updateMatchIndex(parsedMessage.leaderIndex, parsedMessage.to+1, parsedMessage.matchIndex);
         break;
     }
   };

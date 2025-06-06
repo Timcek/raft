@@ -62,7 +62,8 @@ type Server struct {
 
 	//volatile state on leader
 	// Index 0 is reserved for current server and each of the other indexes is reserved for servers specified in serverAddresses
-	nextIndex []int
+	nextIndex  []int
+	matchIndex []int
 
 	// Opened file for writing all the messages on the server. This enables us to easier keep track of what is going on in servers.
 	file *os.File
@@ -83,11 +84,16 @@ func CreateServer(addressIndex int, addresses []string, log []log.Message, start
 	server.messages = make(chan Message)
 	server.serverAddressIndex = addressIndex
 	go server.startServerWebSocket(server.serverAddressIndex)
-	server.currentTerm = startTerm
+	if startTerm == -1 {
+		server.currentTerm = 0
+	} else {
+		server.currentTerm = startTerm
+	}
 	server.updateServerTerm()
 	server.serverAddresses = addresses
 	server.createElectionTimer()
 	server.nextIndex = make([]int, len(server.serverAddresses))
+	server.matchIndex = make([]int, len(server.serverAddresses))
 
 	for _, value := range log {
 		newLog := sgrpc.LogEntry{
@@ -101,7 +107,7 @@ func CreateServer(addressIndex int, addresses []string, log []log.Message, start
 		}
 	}
 	server.commitAllEntriesUpToCommitIndex(server.commitIndex)
-	server.initializeNextIndex()
+	server.initializeNextIndexAndMatchIndex()
 	server.commitLog()
 
 	file, err := os.Create("output" + strconv.Itoa(addressIndex) + ".txt")
@@ -363,7 +369,7 @@ func (server *Server) becomeFollower(leaderAddressIndex int) {
 func (server *Server) becomeLeader() {
 	server.serverState = LEADER
 	server.inElection = false
-	server.initializeNextIndex()
+	server.initializeNextIndexAndMatchIndex()
 	server.stopElectionTimer()
 	server.sendBecomeLeader()
 	// The first heartbeat after election shouldn't send out appendEntries, so we can adjust matchIndex for every server
@@ -371,12 +377,14 @@ func (server *Server) becomeLeader() {
 	server.resetHeartbeat()
 }
 
-func (server *Server) initializeNextIndex() {
+func (server *Server) initializeNextIndexAndMatchIndex() {
 	logLength := len(server.log)
 	// Initialize nextIndex array to the length of the leaders log. If the replicated logs on other servers are not the
 	// same, they will get fixed with appendEntries and heartbeats
 	for index, _ := range server.nextIndex {
 		server.nextIndex[index] = logLength
+		server.matchIndex[index] = 0
+		server.sendMatchIndex(index)
 		server.sendNextIndex(index)
 	}
 }
@@ -784,6 +792,11 @@ func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryRespon
 		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		server.sendNextIndex(serverIndex)
+	} else {
+		// We receive successful heartbeat, this means we can set matchIndex to the length of the leaders log, since
+		// logs on leader and follower are the same.
+		server.matchIndex[serverIndex] = len(server.log)
+		server.sendMatchIndex(serverIndex)
 	}
 }
 
@@ -823,6 +836,8 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex]++
 		server.sendNextIndex(serverIndex)
+		server.matchIndex[serverIndex] = server.nextIndex[serverIndex]
+		server.sendMatchIndex(serverIndex)
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term

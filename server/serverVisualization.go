@@ -27,6 +27,7 @@ const ACTION_APPEND_TO_LOG = 11
 const ACTION_COMMIT_LOG = 12
 const ACTION_UPDATE_NEXT_INDEX = 13
 const ACTION_DELETE_FROM_INDEX = 14
+const ACTION_UPDATE_MATCH_INDEX = 15
 
 type Message struct {
 	Action          int    `json:"action"`
@@ -43,6 +44,7 @@ type Message struct {
 	NextIndex       int    `json:"nextIndex"`
 	LeaderIndex     int    `json:"leaderIndex"`
 	DeleteFromIndex int    `json:"deleteFromIndex"`
+	MatchIndex      int    `json:"matchIndex"`
 }
 
 func (server *Server) startServerWebSocket(serverIndex int) {
@@ -333,6 +335,17 @@ func (server *Server) deleteEtries(fromIndex int) {
 		Action:          ACTION_DELETE_FROM_INDEX,
 		DeleteFromIndex: fromIndex,
 		To:              server.serverAddressIndex,
+	}
+	server.messages <- message
+}
+
+func (server *Server) sendMatchIndex(index int) {
+	fmt.Println(server.matchIndex)
+	message := Message{
+		Action:      ACTION_UPDATE_MATCH_INDEX,
+		MatchIndex:  server.matchIndex[index],
+		LeaderIndex: server.serverAddressIndex,
+		To:          index,
 	}
 	server.messages <- message
 }
