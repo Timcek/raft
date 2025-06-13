@@ -122,3 +122,8 @@ the next conditions:
   ]
 }
 ```
+
+## Visualization shorkeys
+- Press S to stop the simulation
+- Press R to resume the simulation
+- Press C to trigger default client request
