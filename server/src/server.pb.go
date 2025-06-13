@@ -176,7 +176,8 @@ func (x *LogEntry) GetCommited() bool {
 type AppendEntryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	MatchIndex    int64                  `protobuf:"varint,2,opt,name=matchIndex,proto3" json:"matchIndex,omitempty"`
+	Success       bool                   `protobuf:"varint,3,opt,name=success,proto3" json:"success,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -214,6 +215,13 @@ func (*AppendEntryResponse) Descriptor() ([]byte, []int) {
 func (x *AppendEntryResponse) GetTerm() int64 {
 	if x != nil {
 		return x.Term
+	}
+	return 0
+}
+
+func (x *AppendEntryResponse) GetMatchIndex() int64 {
+	if x != nil {
+		return x.MatchIndex
 	}
 	return 0
 }
@@ -457,10 +465,13 @@ const file_server_proto_rawDesc = "" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x18\n" +
 	"\aMessage\x18\x03 \x01(\tR\aMessage\x12\x1a\n" +
-	"\bCommited\x18\x04 \x01(\bR\bCommited\"C\n" +
+	"\bCommited\x18\x04 \x01(\bR\bCommited\"c\n" +
 	"\x13AppendEntryResponse\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\"\x90\x01\n" +
+	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x1e\n" +
+	"\n" +
+	"matchIndex\x18\x02 \x01(\x03R\n" +
+	"matchIndex\x12\x18\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"\x90\x01\n" +
 	"\x12RequestVoteMessage\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x03R\x04term\x12\"\n" +
 	"\flastLogIndex\x18\x02 \x01(\x03R\flastLogIndex\x12 \n" +

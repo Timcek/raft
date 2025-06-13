@@ -407,8 +407,9 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		server.becomeFollower(int(in.LeaderAddressIndex))
 		server.sendAppendEntryReply(int(in.LeaderAddressIndex), true)
 		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: true,
+			Term:       int64(server.currentTerm),
+			MatchIndex: int64(len(server.log)),
+			Success:    true,
 		}, nil
 	} else if (len(server.log) == 0 && int(in.PrevLogTerm) == 0 && int(in.PrevLogIndex) == 0) ||
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
@@ -432,8 +433,9 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 
 func (server *Server) receivesHeartbeatOrAppendEntryWithStaleTerm() *sgrpc.AppendEntryResponse {
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
+		Term:       int64(server.currentTerm),
+		MatchIndex: 0,
+		Success:    false,
 	}
 }
 
@@ -457,16 +459,18 @@ func (server *Server) checkTheReceivedHeartbeat(in *sgrpc.AppendEntryMessage) (*
 func (server *Server) receivedHeartbeatWithNewerLog(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
 	server.sendHeartbeatReply(leaderAddressIndex, false)
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
+		Term:       int64(server.currentTerm),
+		MatchIndex: 0,
+		Success:    false,
 	}
 }
 
 func (server *Server) receivedValidHeartbeat(leaderAddressIndex int) *sgrpc.AppendEntryResponse {
 	server.sendHeartbeatReply(leaderAddressIndex, true)
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: true,
+		Term:       int64(server.currentTerm),
+		MatchIndex: int64(len(server.log)),
+		Success:    true,
 	}
 }
 
@@ -476,8 +480,9 @@ func (server *Server) receivedValidAppendEntry(in *sgrpc.AppendEntryMessage) *sg
 	server.commitEntriesOnFollower(int(in.LeaderCommit))
 	server.sendAppendEntryReply(int(in.LeaderAddressIndex), true)
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: true,
+		Term:       int64(server.currentTerm),
+		MatchIndex: int64(len(server.log)),
+		Success:    true,
 	}
 }
 
@@ -489,15 +494,17 @@ func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgr
 		server.commitEntriesOnFollower(int(in.LeaderCommit))
 		server.sendAppendEntryReply(int(in.LeaderAddressIndex), true)
 		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: true,
+			Term:       int64(server.currentTerm),
+			MatchIndex: int64(len(server.log)),
+			Success:    true,
 		}, nil
 	}
 	server.electionTimeout()
 	server.sendAppendEntryReply(int(in.LeaderAddressIndex), false)
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
+		Term:       int64(server.currentTerm),
+		MatchIndex: 0,
+		Success:    false,
 	}, nil
 }
 
@@ -512,8 +519,9 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 			server.commitEntriesOnFollower(commitIndex)
 			server.sendAppendEntryReply(int(in.LeaderAddressIndex), true)
 			return &sgrpc.AppendEntryResponse{
-				Term:    int64(server.currentTerm),
-				Success: true,
+				Term:       int64(server.currentTerm),
+				MatchIndex: int64(len(server.log)),
+				Success:    true,
 			}, nil
 		}
 		position--
@@ -524,8 +532,9 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		server.electionTimeout()
 		server.sendAppendEntryReply(int(in.LeaderAddressIndex), false)
 		return &sgrpc.AppendEntryResponse{
-			Term:    int64(server.currentTerm),
-			Success: false,
+			Term:       int64(server.currentTerm),
+			MatchIndex: 0,
+			Success:    false,
 		}, nil
 	}
 	//We received commited append entry that is not in our log
@@ -534,8 +543,9 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 	// us previous log entries for us to fix our log.
 	server.sendAppendEntryReply(int(in.LeaderAddressIndex), false)
 	return &sgrpc.AppendEntryResponse{
-		Term:    int64(server.currentTerm),
-		Success: false,
+		Term:       int64(server.currentTerm),
+		MatchIndex: 0,
+		Success:    false,
 	}, nil
 }
 
@@ -651,7 +661,7 @@ func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
 // Server log management
 
 func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
-	server.appendToServerLog(int(newLogEntry.Term), int(newLogEntry.Index), newLogEntry.Message)
+	server.sendAppendToServerLog(int(newLogEntry.Term), int(newLogEntry.Index), newLogEntry.Message)
 	server.log = append(server.log, log.Message{
 		Term:     int(newLogEntry.Term),
 		Index:    int(newLogEntry.Index),
@@ -711,7 +721,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.sendNextIndex(server.serverAddressIndex)
 
 	server.resetHeartbeat()
-	server.sendAppendEntries()
+	//server.sendAppendEntries()
 	server.logReplicationMutex.Unlock()
 
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
@@ -795,7 +805,7 @@ func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryRespon
 	} else {
 		// We receive successful heartbeat, this means we can set matchIndex to the length of the leaders log, since
 		// logs on leader and follower are the same.
-		server.matchIndex[serverIndex] = len(server.log)
+		server.matchIndex[serverIndex] = int(response.MatchIndex)
 		server.sendMatchIndex(serverIndex)
 	}
 }
@@ -836,7 +846,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex]++
 		server.sendNextIndex(serverIndex)
-		server.matchIndex[serverIndex] = server.nextIndex[serverIndex]
+		server.matchIndex[serverIndex] = int(appendEntryResponse.MatchIndex)
 		server.sendMatchIndex(serverIndex)
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {

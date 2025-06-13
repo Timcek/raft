@@ -296,7 +296,7 @@ func (server *Server) updateServerTerm() {
 	server.messages <- message
 }
 
-func (server *Server) appendToServerLog(term int, index int, data string) {
+func (server *Server) sendAppendToServerLog(term int, index int, data string) {
 	message := Message{
 		Action:      ACTION_APPEND_TO_LOG,
 		ServerIndex: server.serverAddressIndex,
