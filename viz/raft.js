@@ -404,3 +404,17 @@ raft.update = function(model) {
   });
   model.messages = keep;
 };
+
+raft.clientRequest = function(model, server) {
+  if (server.state == 'leader') {
+    ws[server.id-1].send(JSON.stringify({method: "request", message: "default"}));
+  }
+};
+
+raft.stop = function() {
+  playback.pause()
+};
+
+raft.resumeAll = function() {
+  playback.resume()
+};

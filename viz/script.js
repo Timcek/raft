@@ -237,6 +237,7 @@ var serverActions = [
   ['restart', restart],
   ['time out', timeout],
   ['request', clientRequest],
+  ['show log', showLog],
 ];
 
 var messageActions = [
@@ -670,11 +671,7 @@ $(window).keyup(function(e) {
   if (e.target.id == "title")
     return;
   var leader = getLeader();
-  if (e.keyCode == ' '.charCodeAt(0) ||
-      e.keyCode == 190 /* dot, emitted by Logitech remote */) {
-    $('.modal').modal('hide');
-    playback.toggle();
-  } else if (e.keyCode == 'C'.charCodeAt(0)) {
+  if (e.keyCode == 'C'.charCodeAt(0)) {
     if (leader !== null) {
       state.fork();
       raft.clientRequest(state.current, leader);
@@ -682,47 +679,20 @@ $(window).keyup(function(e) {
       render.update();
       $('.modal').modal('hide');
     }
-  } else if (e.keyCode == 'R'.charCodeAt(0)) {
+  } else if (e.keyCode == 'S'.charCodeAt(0)) {
     if (leader !== null) {
       state.fork();
       raft.stop(state.current, leader);
-      raft.resume(state.current, leader);
       state.save();
       render.update();
       $('.modal').modal('hide');
     }
-  } else if (e.keyCode == 'T'.charCodeAt(0)) {
-    state.fork();
-    raft.spreadTimers(state.current);
-    state.save();
-    render.update();
-    $('.modal').modal('hide');
-  } else if (e.keyCode == 'A'.charCodeAt(0)) {
-    state.fork();
-    raft.alignTimers(state.current);
-    state.save();
-    render.update();
-    $('.modal').modal('hide');
-  } else if (e.keyCode == 'L'.charCodeAt(0)) {
-    state.fork();
-    playback.pause();
-    raft.setupLogReplicationScenario(state.current);
-    state.save();
-    render.update();
-    $('.modal').modal('hide');
-  } else if (e.keyCode == 'B'.charCodeAt(0)) {
+  } else if (e.keyCode == 'R'.charCodeAt(0)) {
     state.fork();
     raft.resumeAll(state.current);
     state.save();
     render.update();
     $('.modal').modal('hide');
-  } else if (e.keyCode == 'F'.charCodeAt(0)) {
-    state.fork();
-    render.update();
-    $('.modal').modal('hide');
-  } else if (e.keyCode == 191 && e.shiftKey) { /* question mark */
-    playback.pause();
-    $('#modal-help').modal('show');
   }
 });
 
@@ -903,11 +873,12 @@ var updateServerTerm = function (serverIndex, term) {
   state.current.servers[serverIndex].term = term
 }
 
-var appendToLog = function (serverIndex, term, value) {
+var appendToLog = function (serverIndex, term, index, value) {
   // voteGranted starts with 1
   state.current.servers[serverIndex].log.push({
     term: term,
-    value: value
+    value: value,
+    index: index
   })
 }
 
@@ -957,6 +928,32 @@ var resumeServer = function(model, server) {
 var restart = function(model, server) {
   server.state = 'follower'
   ws[server.id-1].send(JSON.stringify({method: "restart"}));
+};
+
+var showLog = function(model, server) {
+  var m = $('#modal-details');
+  $('.modal-title', m).text('Server ' + server.id + " logs");
+  var peerTable = $('<table></table>')
+      .addClass('table table-condensed')
+      .append($('<tr></tr>')
+          .append('<th>Log term</th>')
+          .append('<th>Log index</th>')
+          .append('<th>Log value</th>')
+      );
+  server.log.forEach(function(entry) {
+    peerTable.append($('<tr></tr>')
+        .append('<td>' + entry.term + '</td>')
+        .append('<td>' + entry.index + '</td>')
+        .append('<td>' + entry.value + '</td>')
+    );
+  });
+  $('.modal-body', m)
+      .empty()
+      .append($('<dl class="dl-horizontal"></dl>')
+          .append($('<dt>Logs</dt>'))
+          .append($('<dd></dd>').append(peerTable))
+      );
+  m.modal();
 };
 
 var updateNextIndex = function (leaderIndex, serverIndex, nextIndex) {
@@ -1020,7 +1017,7 @@ function connect(url, index) {
         updateServerTerm(parsedMessage.serverIndex, parsedMessage.term);
         break;
       case 11:
-        appendToLog(parsedMessage.serverIndex, parsedMessage.term, parsedMessage.data);
+        appendToLog(parsedMessage.serverIndex, parsedMessage.term, parsedMessage.index, parsedMessage.data);
         break;
       case 12:
         updateCommitIndex(parsedMessage.serverIndex, parsedMessage.commitIndex);
@@ -1127,3 +1124,14 @@ function stopSimulation() {
     })
   }
 }
+
+setTimeout(() => {
+  $("#clientRequestButton").click(function () {
+    let value = $("#clientRequest").val()
+    state.current.servers.forEach((server) => {
+      if (server.state == 'leader') {
+        ws[server.id-1].send(JSON.stringify({method: "request", message: value}));
+      }
+    })
+  })
+}, 40)

@@ -33,6 +33,7 @@ type Message struct {
 	Action          int    `json:"action"`
 	From            int    `json:"from"`
 	To              int    `json:"to"`
+	Index           int    `json:"index"`
 	ServerState     string `json:"serverState"`
 	Granted         bool   `json:"granted"`
 	Success         bool   `json:"success"`
@@ -98,8 +99,9 @@ func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 	// Listen for client messages and handle them
 	wg.Add(1)
 	type msg struct {
-		Method string `json:"method"`
-		Value  int    `json:"value"`
+		Method  string `json:"method"`
+		Value   int    `json:"value"`
+		Message string `json:"message"`
 	}
 	go func() {
 		defer wg.Done()
@@ -126,7 +128,7 @@ func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 					contextServer, cancel := context.WithTimeout(context.Background(), time.Second*5)
 					defer cancel()
 					appendEntryMessage := sgrpc.ClientRequestMessage{
-						Message: "salkf",
+						Message: jsonMessage.Message,
 					}
 					_, err = grpcClient.ClientRequest(contextServer, &appendEntryMessage)
 					if err != nil {
@@ -162,6 +164,9 @@ func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 			} else if jsonMessage.Method == "resumeServer" {
 				if server.serverState != LEADER {
 					server.resetElectionTimer()
+				} else {
+					server.sendBecomeLeader()
+					server.resetHeartbeat()
 				}
 			}
 		}
@@ -191,7 +196,6 @@ func (server *Server) sendVoteRequest(to int) {
 }
 
 func (server *Server) sendVoteReply(to int, granted bool) {
-	//TODO tudi tole še popravi
 	message := Message{
 		Action:  ACTION_SEND_VOTE_REPLY,
 		From:    server.serverAddressIndex,
@@ -210,7 +214,6 @@ func (server *Server) sendVoteReply(to int, granted bool) {
 }
 
 func (server *Server) sendHeartbeat(to int) {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action: ACTION_SEND_HEARTBEAT_MESSAGE,
 		From:   server.serverAddressIndex,
@@ -220,8 +223,6 @@ func (server *Server) sendHeartbeat(to int) {
 }
 
 func (server *Server) sendHeartbeatReply(to int, success bool) {
-	//TODO tole je potrebno še pravilno implementirati tale successfull
-	//in pa preglej če te stvari delujejo pravilno tudi v javascriptu
 	message := Message{
 		Action:  ACTION_SEND_HEARTBEAT_REPLY,
 		From:    server.serverAddressIndex,
@@ -241,7 +242,6 @@ func (server *Server) sendHeartbeatReply(to int, success bool) {
 }
 
 func (server *Server) sendAppendEntry(to int) {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action: ACTION_SEND_APPEND_ENTRY_MESSAGE,
 		From:   server.serverAddressIndex,
@@ -251,7 +251,6 @@ func (server *Server) sendAppendEntry(to int) {
 }
 
 func (server *Server) sendAppendEntryReply(to int, success bool) {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action:  ACTION_SEND_APPEND_ENTRY_REPLY,
 		From:    server.serverAddressIndex,
@@ -271,7 +270,6 @@ func (server *Server) sendAppendEntryReply(to int, success bool) {
 }
 
 func (server *Server) sendBecomeLeader() {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action:      ACTION_BECOME_LEADER,
 		ServerIndex: server.serverAddressIndex,
@@ -280,7 +278,6 @@ func (server *Server) sendBecomeLeader() {
 }
 
 func (server *Server) grantVote(serverIndex int) {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action:      ACTION_GRANT_VOTE,
 		ServerIndex: server.serverAddressIndex,
@@ -291,7 +288,6 @@ func (server *Server) grantVote(serverIndex int) {
 }
 
 func (server *Server) updateServerTerm() {
-	//TODO tole je potrebno še pravilno implementirati
 	message := Message{
 		Action:      ACTION_UPDATE_SERVER_TERM,
 		ServerIndex: server.serverAddressIndex,
@@ -300,13 +296,13 @@ func (server *Server) updateServerTerm() {
 	server.messages <- message
 }
 
-func (server *Server) appendToServerLog(term int, data string) {
-	//TODO tole je potrebno še pravilno implementirati
+func (server *Server) appendToServerLog(term int, index int, data string) {
 	message := Message{
 		Action:      ACTION_APPEND_TO_LOG,
 		ServerIndex: server.serverAddressIndex,
 		Term:        term,
 		Data:        data,
+		Index:       index,
 	}
 	server.messages <- message
 }

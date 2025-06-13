@@ -651,7 +651,7 @@ func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
 // Server log management
 
 func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
-	server.appendToServerLog(int(newLogEntry.Term), newLogEntry.Message)
+	server.appendToServerLog(int(newLogEntry.Term), int(newLogEntry.Index), newLogEntry.Message)
 	server.log = append(server.log, log.Message{
 		Term:     int(newLogEntry.Term),
 		Index:    int(newLogEntry.Index),
