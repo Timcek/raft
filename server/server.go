@@ -875,5 +875,3 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 		server.commitAllEntriesUpToCommitIndex(logLengthToCheckForMajorityReplication - 1)
 	}
 }
-
-//TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
