@@ -246,7 +246,6 @@ func (server *Server) resetHeartbeat() {
 }
 
 func (server *Server) heartbeatTimeout() {
-	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	var wg sync.WaitGroup
@@ -255,8 +254,6 @@ func (server *Server) heartbeatTimeout() {
 			continue
 		}
 		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
-			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
-
 			server.prepareAndSendAppendEntry(index, &wg, address)
 		} else {
 			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
@@ -299,6 +296,45 @@ func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm in
 		LeaderCommit:  int64(server.commitIndex),
 	}
 	server.sendHeartbeatMessage(address, &message, nil, serverIndex)
+}
+
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage,
+	waitGroup *sync.WaitGroup, serverIndex int) {
+	go func() {
+		if waitGroup != nil {
+			defer waitGroup.Done()
+		}
+		conn, err := grpc.NewClient(address, grpc.WithInsecure())
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+
+		grpcClient := sgrpc.NewServerServiceClient(conn)
+
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		defer cancel()
+
+		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			server.heartbeatMutex.Lock()
+			server.processHeartbeatResponse(heartbeatResponse, serverIndex)
+			server.heartbeatMutex.Unlock()
+		}
+	}()
+}
+
+func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverIndex int) {
+	if !response.Success && int(response.Term) > server.currentTerm {
+		// We receive success false, because the other server has higher term tha this
+		server.becomeCandidate()
+		server.changeTerm(int(response.Term), false)
+	} else if !response.Success {
+		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
+		server.nextIndex[serverIndex]--
+	}
 }
 
 // Change server state
@@ -549,7 +585,7 @@ func (server *Server) changeTerm(term int, votedInThisTerm bool) {
 	server.votedInThisTerm = votedInThisTerm
 }
 
-// Retrieve log info
+// Server log management
 
 func (server *Server) retrieveLastLogIndexAndTerm() (int64, int64) {
 	var lastLogTerm int64
@@ -580,8 +616,6 @@ func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
 	}
 	return prevLogIndex, prevLogTerm
 }
-
-// Server log management
 
 func (server *Server) appendToLog(newLogEntry *sgrpc.LogEntry) {
 	server.log = append(server.log, log.Message{
@@ -624,7 +658,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 			LeaderAddress: server.leaderAddress,
 		}, nil
 	}
-	server.writeToFile("Received client request\n")
 
 	server.logReplicationMutex.Lock()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
@@ -641,6 +674,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 
 	server.resetHeartbeat()
+	//TODO tejle locki niso uredu, saj ne more priti do sočasnega dodajanja zapisov
 	server.sendAppendEntries()
 	server.logReplicationMutex.Unlock()
 
@@ -681,45 +715,6 @@ func (server *Server) sendAppendEntries() {
 }
 
 // Messages sending
-
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage,
-	waitGroup *sync.WaitGroup, serverIndex int) {
-	go func() {
-		if waitGroup != nil {
-			defer waitGroup.Done()
-		}
-		conn, err := grpc.NewClient(address, grpc.WithInsecure())
-		if err != nil {
-			panic(err)
-		}
-		defer conn.Close()
-
-		grpcClient := sgrpc.NewServerServiceClient(conn)
-
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-		defer cancel()
-
-		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
-		if err != nil {
-			fmt.Println(err)
-		} else {
-			server.heartbeatMutex.Lock()
-			server.processHeartbeatResponse(heartbeatResponse, serverIndex)
-			server.heartbeatMutex.Unlock()
-		}
-	}()
-}
-
-func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryResponse, serverIndex int) {
-	if !response.Success && int(response.Term) > server.currentTerm {
-		// We receive success false, because the other server has higher term tha this
-		server.becomeCandidate()
-		server.changeTerm(int(response.Term), false)
-	} else if !response.Success {
-		// We receive success false, because this leader has different log than the follower, to which the appendEntry was sent.
-		server.nextIndex[serverIndex]--
-	}
-}
 
 func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage *sgrpc.AppendEntryMessage, serverIndex int,
 	logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
