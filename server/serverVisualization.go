@@ -80,100 +80,107 @@ func (server *Server) wsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for messages and send them to client
 	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			message := <-server.messages
-			jsonBytes, err := json.Marshal(message)
-			if err != nil {
-				panic(err)
-			}
-			// Echo the message back to the client
-			if err := conn.WriteMessage(websocket.TextMessage, jsonBytes); err != nil {
-				fmt.Println("Error writing message:", err)
-				break
-			}
-		}
-	}()
+	go server.listenForServerMessagesAndSendThemToBrowser(&wg, conn)
 
 	// Listen for client messages and handle them
 	wg.Add(1)
-	type msg struct {
-		Method  string `json:"method"`
-		Value   int    `json:"value"`
-		Message string `json:"message"`
-	}
-	go func() {
-		defer wg.Done()
-		for {
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				fmt.Println("Error reading message:", err)
-				break
-			}
-			var jsonMessage msg
-			err = json.Unmarshal(message, &jsonMessage)
-			if err != nil {
-				fmt.Println("error:", err)
-			}
-			if jsonMessage.Method == "request" {
-				go func() {
-					conn, err := grpc.NewClient(server.serverAddresses[server.serverAddressIndex], grpc.WithInsecure())
-					if err != nil {
-						panic(err)
-					}
-					defer conn.Close()
-					grpcClient := sgrpc.NewServerServiceClient(conn)
-					//TODO check this timeout how long should it be
-					contextServer, cancel := context.WithTimeout(context.Background(), time.Second*5)
-					defer cancel()
-					appendEntryMessage := sgrpc.ClientRequestMessage{
-						Message: jsonMessage.Message,
-					}
-					_, err = grpcClient.ClientRequest(contextServer, &appendEntryMessage)
-					if err != nil {
-						panic(err)
-					}
-				}()
-			} else if jsonMessage.Method == "timeout" {
-				server.electionTimeout()
-			} else if jsonMessage.Method == "restart" {
-				server.resetElectionTimer()
-				server.becomeCandidate()
-			} else if jsonMessage.Method == "speedChange" {
-				jsVisualizationSpeed = float64(1) / float64(jsonMessage.Value)
-				if server.serverState != LEADER {
-					randomNum := float64(server.electionTime.Sub(time.Now())) / float64(time.Millisecond) / float64(electionTimeoutTime)
-					//server.resetElectionTimer()
-					fmt.Println("random num:", randomNum)
-					fmt.Println("time this circle:", randomNum*float64(electionTimeoutTime))
-					fmt.Println("election timeout time:", electionTimeoutTime)
-					electionTimeoutTime = int(math.Pow(jsVisualizationSpeed, -1) * 200)
-					server.electionTimer.Reset(time.Millisecond * time.Duration(randomNum*float64(electionTimeoutTime)))
-					server.electionTime = time.Now().Add(time.Millisecond * time.Duration(randomNum*float64(electionTimeoutTime)))
-					server.sendElectionTimeoutChange(int(randomNum * float64(electionTimeoutTime)))
-				} else {
-					timeProcentage := float64(server.heartbeatTime.Sub(time.Now())) / float64(time.Millisecond) / float64(electionTimeoutTime/4)
-					electionTimeoutTime = int(math.Pow(jsVisualizationSpeed, -1) * 200)
-					server.heartbeatTimer.Reset(time.Millisecond * time.Duration(timeProcentage*float64(electionTimeoutTime/4)))
-					server.heartbeatTime = time.Now().Add(time.Millisecond * time.Duration(timeProcentage*float64(electionTimeoutTime/4)))
-				}
-				fmt.Println(jsonMessage.Value)
-			} else if jsonMessage.Method == "stopServer" {
-				server.stopElectionTimer()
-			} else if jsonMessage.Method == "resumeServer" {
-				if server.serverState != LEADER {
-					server.resetElectionTimer()
-				} else {
-					server.sendBecomeLeader()
-					server.resetHeartbeat()
-				}
-			}
-		}
-	}()
+	go server.listenForMessagesFromBrowser(&wg, conn)
 
 	wg.Wait()
 }
+
+func (server *Server) listenForServerMessagesAndSendThemToBrowser(wg *sync.WaitGroup, conn *websocket.Conn) {
+	defer wg.Done()
+	for {
+		message := <-server.messages
+		jsonBytes, err := json.Marshal(message)
+		if err != nil {
+			panic(err)
+		}
+		// Echo the message back to the client
+		if err := conn.WriteMessage(websocket.TextMessage, jsonBytes); err != nil {
+			fmt.Println("Error writing message:", err)
+			break
+		}
+	}
+}
+
+type msg struct {
+	Method  string `json:"method"`
+	Value   int    `json:"value"`
+	Message string `json:"message"`
+}
+
+func (server *Server) listenForMessagesFromBrowser(wg *sync.WaitGroup, conn *websocket.Conn) {
+	defer wg.Done()
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Println("Error reading message:", err)
+			break
+		}
+		var jsonMessage msg
+		err = json.Unmarshal(message, &jsonMessage)
+		if err != nil {
+			fmt.Println("error:", err)
+		}
+		if jsonMessage.Method == "request" {
+			go server.processRequestMethod(jsonMessage)
+		} else if jsonMessage.Method == "timeout" {
+			server.electionTimeout()
+		} else if jsonMessage.Method == "restart" {
+			server.resetElectionTimer()
+			server.becomeCandidate()
+		} else if jsonMessage.Method == "speedChange" {
+			server.processSpeedChangeMethod(jsonMessage)
+		} else if jsonMessage.Method == "stopServer" {
+			server.stopElectionTimer()
+		} else if jsonMessage.Method == "resumeServer" {
+			if server.serverState != LEADER {
+				server.resetElectionTimer()
+			} else {
+				server.sendBecomeLeader()
+				server.resetHeartbeat()
+			}
+		}
+	}
+}
+
+func (server *Server) processRequestMethod(jsonMessage msg) {
+	conn, err := grpc.NewClient(server.serverAddresses[server.serverAddressIndex], grpc.WithInsecure())
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+	grpcClient := sgrpc.NewServerServiceClient(conn)
+	contextServer, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	appendEntryMessage := sgrpc.ClientRequestMessage{
+		Message: jsonMessage.Message,
+	}
+	_, err = grpcClient.ClientRequest(contextServer, &appendEntryMessage)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (server *Server) processSpeedChangeMethod(jsonMessage msg) {
+	jsVisualizationSpeed = float64(1) / float64(jsonMessage.Value)
+	if server.serverState != LEADER {
+		randomNum := float64(server.electionTime.Sub(time.Now())) / float64(time.Millisecond) / float64(electionTimeoutTime)
+		electionTimeoutTime = int(math.Pow(jsVisualizationSpeed, -1) * 200)
+		server.electionTimer.Reset(time.Millisecond * time.Duration(randomNum*float64(electionTimeoutTime)))
+		server.electionTime = time.Now().Add(time.Millisecond * time.Duration(randomNum*float64(electionTimeoutTime)))
+		server.sendElectionTimeoutChange(int(randomNum * float64(electionTimeoutTime)))
+	} else {
+		timeProcentage := float64(server.heartbeatTime.Sub(time.Now())) / float64(time.Millisecond) / float64(electionTimeoutTime/4)
+		electionTimeoutTime = int(math.Pow(jsVisualizationSpeed, -1) * 200)
+		server.heartbeatTimer.Reset(time.Millisecond * time.Duration(timeProcentage*float64(electionTimeoutTime/4)))
+		server.heartbeatTime = time.Now().Add(time.Millisecond * time.Duration(timeProcentage*float64(electionTimeoutTime/4)))
+	}
+}
+
+// Methods for sending messages to the browser.
 
 func (server *Server) sendElectionTimeoutChange(time int) {
 	message := Message{

@@ -29,27 +29,13 @@
         border-radius: 4px;
         min-width: 460px;
       }
-
-      input[type="submit"] {
-        background: #007BFF;
-        color: white;
-        border: none;
-        padding: 10px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 1em;
-      }
-
-      input[type="submit"]:hover {
-        background: #0056b3;
-      }
     </style>
   </head>
   <body>
   <form class="upload container" style="margin-top: 30px; margin-bottom: 50px">
     <div style="display: flex; justify-content: center">
       <input type="file" name="uploadFile" accept=".json" />
-      <input type="submit" value="Začni simulacijo"/>
+      <input type="submit" class="submit-btn" style="width: auto" value="Začni simulacijo"/>
     </div>
   </form>
   <script src="script.js"></script>

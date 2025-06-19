@@ -894,7 +894,6 @@ var clientRequest = function(model, server) {
   }
 };
 
-
 var timeout = function(model, server) {
   server.state = 'follower';
   server.electionAlarm = 0;
@@ -968,10 +967,106 @@ var updateMatchIndex = function (leaderIndex, serverIndex, matchIndex) {
   state.current.servers[leaderIndex].matchIndex[serverIndex] = matchIndex
 }
 
+let previousValue = 100
+function setIntervalForCheckingSpeedSlider() {
+  window.setInterval(function () {
+    let value = $("#speedSlider #tooltip .tooltip-inner").html().replace("x", "").split("/")
+    if (Number(value[1]) !== previousValue) {
+      previousValue = Number(value[1])
+      ws.forEach((element) => {
+        element.send(JSON.stringify({method: "speedChange", value: previousValue}));
+      })
+    }
+  }, 100)
+}
+
+
+let startSimulation = false
+// Event listener for sending uploaded file to the backend and starting simulation
+document.querySelector('.upload').addEventListener('submit', function (e) {
+  // Stops form from submitting, because we do not want the page to reload but only issue the request to the backend.
+  e.preventDefault()
+  stopSimulation()
+  setTimeout(() => {
+    let file = e.target.uploadFile.files[0]
+    let formData = new FormData()
+    formData.append('file', file)
+
+    //Send configuration file to the backend
+    fetch('http://localhost:8081/startSimulation', {
+      method: "POST",
+      body: formData
+    })
+    startSimulation = true
+    const reader = new FileReader()
+    reader.onload = function (e) {
+      const contents = event.target.result;
+      try {
+        const json = JSON.parse(contents)
+        window.location.href = window.location.href.split("?")[0] + "?num=" + json.numberOfServers + "&start=true"
+      } catch (err) {
+        console.log("Invalid JSON:", err)
+      }
+    }
+    if (file) {
+      reader.readAsText(file)
+    } else {
+      window.location.href = window.location.href.split("?")[0] + "?start=true"
+    }
+  }, 1000)
+})
+
+function temporarilyStopSimulation() {
+  // Pause the simulation on load to wait for WebSockets to connect
+  setTimeout(() => {
+    playback.pause(true)
+  }, 40)
+}
+
+window.addEventListener('beforeunload', function (event) {
+  stopSimulation()
+})
+
+function stopSimulation() {
+  if (!startSimulation) {
+    fetch('http://localhost:8081/stopSimulation', {
+      method: "POST"
+    })
+  }
+}
+
+//Add event listener for client request button
+setTimeout(() => {
+  $("#clientRequestButton").click(function () {
+    let value = $("#clientRequest").val()
+    state.current.servers.forEach((server) => {
+      if (server.state == 'leader') {
+        ws[server.id-1].send(JSON.stringify({method: "request", message: value}));
+      }
+    })
+  })
+}, 40)
+
+// Trigger establishing connections to WebSocket for each server
+setTimeout(() => {
+  if (params.get("start") === 'true') {
+    connectToWebSockets()
+  }
+  history.pushState(null, '', window.location.href.split("html")[0] + "html")
+}, 200)
+
+function connectToWebSockets() {
+  setTimeout(() => {
+    for (let i = 0; i < NUM_SERVERS; i++) {
+      ws.push(null)
+      connect("ws://localhost:6000" + i + "/serverEvents", i);
+    }
+  }, 150)
+}
+
 let ws = [];
-
 let numOfConnected = 0;
-
+// Create connection to backend WebSocket for each server
 function connect(url, index) {
   let newWS = new WebSocket(url);
 
@@ -1046,92 +1141,5 @@ function connect(url, index) {
   ws[index] = newWS
 }
 
-let previousValue = 100
-window.setInterval(function () {
-  let value = $("#speedSlider #tooltip .tooltip-inner").html().replace("x", "").split("/")
-  if (Number(value[1]) !== previousValue) {
-    previousValue = Number(value[1])
-    ws.forEach((element) => {
-      element.send(JSON.stringify({method: "speedChange", value: previousValue}));
-    })
-  }
-}, 100)
-
-
-function connectToWebSockets() {
-  setTimeout(() => {
-    for (let i = 0; i < NUM_SERVERS; i++) {
-      ws.push(null)
-      connect("ws://localhost:6000" + i + "/serverEvents", i);
-    }
-  }, 150)
-}
-
-let startSimulation = false
-
-document.querySelector('.upload').addEventListener('submit', function (e) {
-  // Stops form from submitting, because we do not want the page to reload but only issue the request to the backend.
-  e.preventDefault()
-  stopSimulation()
-  setTimeout(() => {
-    let file = e.target.uploadFile.files[0]
-    let formData = new FormData()
-    formData.append('file', file)
-
-    //Send configuration file to the backend
-    fetch('http://localhost:8081/startSimulation', {
-      method: "POST",
-      body: formData
-    })
-    startSimulation = true
-    const reader = new FileReader()
-    reader.onload = function (e) {
-      const contents = event.target.result;
-      try {
-        const json = JSON.parse(contents)
-        window.location.href = window.location.href.split("?")[0] + "?num=" + json.numberOfServers + "&start=true"
-      } catch (err) {
-        console.log("Invalid JSON:", err)
-      }
-    }
-    if (file) {
-      reader.readAsText(file)
-    } else {
-      window.location.href = window.location.href.split("?")[0] + "?start=true"
-    }
-  }, 1000)
-})
-
-setTimeout(() => {
-  playback.pause(true)
-}, 40)
-
-setTimeout(() => {
-  if (params.get("start") === 'true') {
-    connectToWebSockets()
-  }
-  history.pushState(null, '', window.location.href.split("html")[0] + "html")
-}, 200)
-
-window.addEventListener('beforeunload', function (event) {
-  stopSimulation()
-})
-
-function stopSimulation() {
-  if (!startSimulation) {
-    fetch('http://localhost:8081/stopSimulation', {
-      method: "POST"
-    })
-  }
-}
-
-setTimeout(() => {
-  $("#clientRequestButton").click(function () {
-    let value = $("#clientRequest").val()
-    state.current.servers.forEach((server) => {
-      if (server.state == 'leader') {
-        ws[server.id-1].send(JSON.stringify({method: "request", message: value}));
-      }
-    })
-  })
-}, 40)
+setIntervalForCheckingSpeedSlider()
+temporarilyStopSimulation()
