@@ -15,7 +15,7 @@ message AppendEntryMessage {
   string leaderAddress = 2;
   int64 prevLogIndex = 3;
   int64 prevLogTerm = 4;
-  LogEntry entry = 5;
+  repeated LogEntry entries = 5;
   int64 leaderCommit = 6;
 }
 
