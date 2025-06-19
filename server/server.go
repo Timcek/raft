@@ -55,8 +55,10 @@ type Server struct {
 	heartbeatMutex                  sync.Mutex
 	logReplicationMutex             sync.Mutex
 	processAppendEntryResponseMutex sync.Mutex
-	appendToLogMutex                sync.Mutex
-	commitEntriesMutex              sync.Mutex
+
+	appendEntryMutex   sync.Mutex
+	appendToLogMutex   sync.Mutex
+	commitEntriesMutex sync.Mutex
 
 	//volatile state on every server
 	commitIndex int
@@ -688,7 +690,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 
 	// server.resetHeartbeat()
-	//server.sendAppendEntries()
+	server.sendAppendEntries()
 	fmt.Println(in.Message)
 	//server.logReplicationMutex.Unlock()
 
@@ -696,36 +698,20 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 }
 
 func (server *Server) sendAppendEntries() {
-	prevLogIndex, prevLogTerm := server.retrievePrevLogIndexAndTerm(len(server.log) - 1)
-	logLengthWhenIssuingAppendEntries := len(server.log)
-	lastLog := server.log[logLengthWhenIssuingAppendEntries-1]
-	appendEntryMessage := sgrpc.AppendEntryMessage{
-		Term:          int64(server.currentTerm),
-		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
-		PrevLogIndex:  prevLogIndex,
-		PrevLogTerm:   prevLogTerm,
-		Entries: []*sgrpc.LogEntry{{
-			Term:    int64(lastLog.Term),
-			Index:   int64(lastLog.Index),
-			Message: lastLog.Msg,
-		}},
-		LeaderCommit: int64(server.commitIndex),
-	}
-
-	var wg sync.WaitGroup
-	for index, address := range server.serverAddresses {
-		if index == server.serverAddressIndex {
+	server.appendEntryMutex.Lock()
+	for serverIndex, _ := range server.nextIndex {
+		if serverIndex == server.serverAddressIndex || server.logCorrectionLock[serverIndex] {
 			continue
 		}
 		// If the number of log entries on the current server is for one bigger than the other server,
 		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.nextIndex[index] == logLengthWhenIssuingAppendEntries-1 {
-			wg.Add(1)
-			server.sendAppendEntryMessage(address, &appendEntryMessage, index, logLengthWhenIssuingAppendEntries, &wg)
+		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+			server.logCorrectionLock[serverIndex] = true
+			server.prepareAndSendAppendEntry(serverIndex, nil, server.serverAddresses[server.serverAddressIndex])
 		}
 	}
-	// We wait for all the AppendEntry messages to return, only then we allow new AppendEntry to be sent.
-	wg.Wait()
+	server.writeToFile(fmt.Sprintf(time.Now().String()+" end of logCorrectionLock entries: %v\n", server.logCorrectionLock))
+	server.appendEntryMutex.Unlock()
 }
 
 // Messages sending
