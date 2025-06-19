@@ -627,6 +627,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.writeToFile("Received client request\n")
 
 	server.logReplicationMutex.Lock()
+	fmt.Println(in.Message)
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
 		lastLogIndex = 0
@@ -642,6 +643,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 
 	server.resetHeartbeat()
 	server.sendAppendEntries()
+	fmt.Println(in.Message)
 	server.logReplicationMutex.Unlock()
 
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
