@@ -19,7 +19,7 @@ const FOLLOWER = 2
 const CANDIDATE = 3
 
 // This means the number of milliseconds
-const electionTimeoutTime = 16000
+const electionTimeoutTime = 4000
 
 const numOfEntriesInAppendEntry = 10
 
@@ -624,7 +624,7 @@ func (server *Server) retrievePrevLogIndexAndTerm(logIndex int) (int64, int64) {
 
 // Server log management
 
-func (server *Server) appendToLog(newLogEntries []*sgrpc.LogEntry) {
+func (server *Server) appendToLog(newLogEntries []*sgrpc.LogEntry) int {
 	server.appendToLogMutex.Lock()
 	defer server.appendToLogMutex.Unlock()
 	for _, newLogEntry := range newLogEntries {
@@ -635,6 +635,7 @@ func (server *Server) appendToLog(newLogEntries []*sgrpc.LogEntry) {
 			Commited: false,
 		})
 	}
+	return len(server.log) - 1
 }
 
 func (server *Server) commitAllEntriesUpToCommitIndex(commitIndex int) {
@@ -685,7 +686,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 		Index:   int64(lastLogIndex) + 1,
 		Message: in.Message,
 	}}
-	server.appendToLog(newLog)
+	logPosition := server.appendToLog(newLog)
 	// Increase the number of logs replicated on this server
 	server.nextIndex[server.serverAddressIndex]++
 
@@ -693,6 +694,10 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	// server.sendAppendEntries()
 	fmt.Println(in.Message)
 	//server.logReplicationMutex.Unlock()
+
+	for !server.log[logPosition].Commited {
+		time.Sleep(time.Millisecond * 10)
+	}
 
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
 }
