@@ -15,6 +15,7 @@ type Configuration struct {
 	ElectionTimeoutTime int      `json:"electionTimeoutTime"`
 	NumberOfServers     int      `json:"numberOfServers"`
 	ServerAddresses     []string `json:"serverAddresses"`
+	ServerIndex         int      `json:"serverIndex"`
 }
 
 func ProcessConfigFile(configFile string) ([]byte, Configuration) {
@@ -38,16 +39,13 @@ func ProcessConfigFile(configFile string) ([]byte, Configuration) {
 
 func main() {
 	configFile := "prodConfiguration.json"
-	serverNum := 0
-	if len(os.Args) > 1 {
-		serverNum, _ = strconv.Atoi(os.Args[1])
-	}
 	content, configuration := ProcessConfigFile(configFile)
 	if (configuration.NumberOfServers % 2) == 0 {
 		fmt.Println("You specified even number of servers in configuration file. For stable program execution " +
 			"use odd number of servers.")
 	}
 	processes := make([]*exec.Cmd, configuration.NumberOfServers)
+	serverNum := configuration.ServerIndex
 
 	file, err := os.Create("errorOutput" + strconv.Itoa(serverNum) + ".txt")
 	if err != nil {
