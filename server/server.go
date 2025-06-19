@@ -690,7 +690,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 
 	// server.resetHeartbeat()
-	server.sendAppendEntries()
+	// server.sendAppendEntries()
 	fmt.Println(in.Message)
 	//server.logReplicationMutex.Unlock()
 
@@ -792,6 +792,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	// Add 1, because the first index is reserved for the current server.
 	server.writeToFile("AppendEntryResponse " + fmt.Sprintf("%v\n", appendEntryResponse))
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
+		server.writeToFile("successfull append")
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
@@ -802,11 +803,13 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 			server.logCorrectionLock[serverIndex] = false
 		}
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
+		server.writeToFile("false append entry")
 		// We receive success=false, because the other server has higher term
 		server.becomeCandidate()
 		server.changeTerm(int(appendEntryResponse.Term), false)
 		server.logCorrectionLock[serverIndex] = false
 	} else if !appendEntryResponse.Success {
+		server.writeToFile("leader has different log")
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
