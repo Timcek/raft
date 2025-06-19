@@ -310,7 +310,7 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string,
 	}
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
-	serverLogLength := server.nextIndex[serverIndex] + 1
+	serverLogLength := server.nextIndex[serverIndex] + len(entries)
 	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength)
 	if testIndex == 0 {
 		server.writeToFile("\nFirst append entry just finished \n")
