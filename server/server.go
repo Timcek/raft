@@ -257,7 +257,7 @@ func (server *Server) resetHeartbeat() {
 func (server *Server) heartbeatTimeout() {
 	server.writeToFile("Sending heartbeat " + fmt.Sprintf("%v\n", server.log))
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	var wg sync.WaitGroup
+	//var wg sync.WaitGroup
 	for index, address := range server.serverAddresses {
 		if index == server.serverAddressIndex || server.logCorrectionLock[index] {
 			continue
@@ -265,13 +265,13 @@ func (server *Server) heartbeatTimeout() {
 		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
 			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
 			server.logCorrectionLock[index] = true
-			server.prepareAndSendAppendEntry(index, &wg, address)
+			server.prepareAndSendAppendEntry(index, nil, address)
 		} else {
 			server.logCorrectionLock[index] = true
 			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
 		}
 	}
-	wg.Wait()
+	//wg.Wait()
 }
 
 func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGroup, address string) {
@@ -324,7 +324,7 @@ func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm in
 		Entries:       nil,
 		LeaderCommit:  int64(server.commitIndex),
 	}
-	server.sendHeartbeatMessage(address, &message, nil, serverIndex)
+	server.sendHeartbeatMessage(address, &message, serverIndex)
 }
 
 // Change server state
@@ -636,6 +636,7 @@ func (server *Server) appendToLog(newLogEntries []*sgrpc.LogEntry) {
 }
 
 func (server *Server) commitAllEntriesUpToCommitIndex(commitIndex int) {
+	// We need this lock because without it the out of order commiting could happen.
 	server.commitEntriesMutex.Lock()
 	defer server.commitEntriesMutex.Unlock()
 	// startIndex points on log entry that is before the last one, when the appendEntry replication was issued.
@@ -729,12 +730,8 @@ func (server *Server) sendAppendEntries() {
 
 // Messages sending
 
-func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage,
-	waitGroup *sync.WaitGroup, serverIndex int) {
+func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgrpc.AppendEntryMessage, serverIndex int) {
 	go func() {
-		if waitGroup != nil {
-			defer waitGroup.Done()
-		}
 		conn, err := grpc.NewClient(address, grpc.WithInsecure())
 		if err != nil {
 			panic(err)
@@ -851,5 +848,3 @@ func (server *Server) checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengt
 		server.commitAllEntriesUpToCommitIndex(logLengthToCheckForMajorityReplication - 1)
 	}
 }
-
-//TODO potrebno implementirati, da se sproži takojšnje proženje pošiljanje novega append entry ne da se čaka na heartbeat timeout
