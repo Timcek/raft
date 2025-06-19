@@ -703,11 +703,11 @@ func (server *Server) sendAppendEntries() {
 		LeaderAddress: server.serverAddresses[server.serverAddressIndex],
 		PrevLogIndex:  prevLogIndex,
 		PrevLogTerm:   prevLogTerm,
-		Entries: &sgrpc.LogEntry{
+		Entries: []*sgrpc.LogEntry{{
 			Term:    int64(lastLog.Term),
 			Index:   int64(lastLog.Index),
 			Message: lastLog.Msg,
-		},
+		}},
 		LeaderCommit: int64(server.commitIndex),
 	}
 
