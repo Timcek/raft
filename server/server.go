@@ -267,7 +267,7 @@ func (server *Server) heartbeatTimeout() {
 		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
 			server.writeToFile("Sending AppendEntry, index: \n" + fmt.Sprintf("%v", index) + ", nextIndex: " + fmt.Sprintf("%v", server.nextIndex))
 			server.logCorrectionLock[index] = true
-			server.prepareAndSendAppendEntry(index, nil, address)
+			go server.prepareAndSendAppendEntry(index, address)
 		} else {
 			server.logCorrectionLock[index] = true
 			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
@@ -276,7 +276,7 @@ func (server *Server) heartbeatTimeout() {
 	//wg.Wait()
 }
 
-func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGroup, address string) {
+func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string) {
 	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
 
 	var entries []*sgrpc.LogEntry
@@ -311,10 +311,7 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, wg *sync.WaitGr
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
 	serverLogLength := server.nextIndex[serverIndex] + 1
-	if wg != nil {
-		wg.Add(1)
-	}
-	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength, wg)
+	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength)
 }
 
 func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, serverIndex int) {
@@ -707,7 +704,7 @@ func (server *Server) sendAppendEntries() {
 		// then we can send append entries, otherwise they will be sent with heartbeats
 		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
 			server.logCorrectionLock[serverIndex] = true
-			server.prepareAndSendAppendEntry(serverIndex, nil, server.serverAddresses[server.serverAddressIndex])
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[server.serverAddressIndex])
 		}
 	}
 	server.writeToFile(fmt.Sprintf(time.Now().String()+" end of logCorrectionLock entries: %v\n", server.logCorrectionLock))
@@ -751,40 +748,31 @@ func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryRespon
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
 			// We use WaitGroup because we are already in go routine from sendHeartbeatMessage
-			var wg sync.WaitGroup
-			server.prepareAndSendAppendEntry(serverIndex, &wg, address)
-			wg.Wait()
+			server.prepareAndSendAppendEntry(serverIndex, address)
 		}
 	}
 	server.logCorrectionLock[serverIndex] = false
 }
 
 func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage *sgrpc.AppendEntryMessage, serverIndex int,
-	logLengthToCheckForMajorityReplication int, waitGroup *sync.WaitGroup) {
-	go func() {
-		if waitGroup != nil {
-			defer waitGroup.Done()
-		}
-		conn, err := grpc.NewClient(address, grpc.WithInsecure())
-		if err != nil {
-			panic(err)
-		}
-		defer conn.Close()
-		grpcClient := sgrpc.NewServerServiceClient(conn)
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
-		defer cancel()
+	logLengthToCheckForMajorityReplication int) {
+	conn, err := grpc.NewClient(address, grpc.WithInsecure())
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+	grpcClient := sgrpc.NewServerServiceClient(conn)
+	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+	defer cancel()
 
-		appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
-		if err != nil {
-			fmt.Println(err)
-			server.logCorrectionLock[serverIndex] = false
-		} else {
-			server.processAppendEntryResponseMutex.Lock()
-			server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication,
-				len(appendEntryMessage.Entries))
-			server.processAppendEntryResponseMutex.Unlock()
-		}
-	}()
+	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
+	if err != nil {
+		fmt.Println(err)
+		server.logCorrectionLock[serverIndex] = false
+	} else {
+		server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication,
+			len(appendEntryMessage.Entries))
+	}
 }
 
 func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.AppendEntryResponse, serverIndex int,
@@ -796,9 +784,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
-			var wg sync.WaitGroup
-			server.prepareAndSendAppendEntry(serverIndex, &wg, server.serverAddresses[serverIndex])
-			wg.Wait()
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
 		}
@@ -813,9 +799,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
-			var wg sync.WaitGroup
-			server.prepareAndSendAppendEntry(serverIndex, &wg, server.serverAddresses[serverIndex])
-			wg.Wait()
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
 		}
