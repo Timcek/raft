@@ -780,12 +780,7 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	grpcClient := sgrpc.NewServerServiceClient(conn)
 	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 	defer cancel()
-
-	start := time.Now()
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
-	end := time.Now()
-	elapsed := end.Sub(start)
-	fmt.Println(time.Now(), " Append entry time: ", elapsed)
 	if err != nil {
 		fmt.Println(err)
 		server.logCorrectionLock[serverIndex] = false
@@ -801,7 +796,8 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
-		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] &&
+			server.nextIndex[server.serverAddressIndex]-server.nextIndex[serverIndex] > 20 {
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
