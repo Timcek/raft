@@ -380,15 +380,9 @@ func (server *Server) initializeNextIndex() {
 	}
 }
 
-func (server *Server) testTime(start time.Time) {
-	fmt.Println(time.Now().String(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex)
-}
-
 // Receive and respond to AppendEntry
 
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
-	start := time.Now()
-	defer server.testTime(start)
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
@@ -787,7 +781,11 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 	defer cancel()
 
+	start := time.Now()
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
+	end := time.Now()
+	elapsed := end.Sub(start)
+	fmt.Println(time.Now(), " Append entry time: ", elapsed)
 	if err != nil {
 		fmt.Println(err)
 		server.logCorrectionLock[serverIndex] = false
