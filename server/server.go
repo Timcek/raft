@@ -99,7 +99,7 @@ func CreateServer(addressIndex int, addresses []string) {
 	}
 	server.file = file
 
-	go server.triggerSendingAppendEntries()
+	//go server.triggerSendingAppendEntries()
 
 	// Register grpc methods
 	grpcServer := grpc.NewServer()
@@ -248,7 +248,7 @@ func (server *Server) receivesDeniedVote(term int) {
 // Leader heartbeat management
 
 func (server *Server) manageHeartbeat() {
-	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
+	server.heartbeatTimer = time.NewTimer(time.Millisecond * 10)
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
@@ -270,7 +270,7 @@ func (server *Server) resetHeartbeat() {
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
 	} else {
-		server.heartbeatTimer.Reset(time.Millisecond * (electionTimeoutTime / 4))
+		server.heartbeatTimer.Reset(time.Millisecond * 10)
 	}
 }
 
@@ -394,6 +394,7 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 	} else if len(server.log) != 0 && server.log[len(server.log)-1].Term == int(in.Entries[0].Term) &&
 		server.log[len(server.log)-1].Index == int(in.Entries[0].Index) {
 		// Received append entry with the same entry as the last log entry
+		//TODO tole je potrebno še popraviti, ker nebo delalo pravlino na leaderju, saj bo narobe povečal next index
 		if len(in.Entries) > 1 {
 			server.resetElectionTimer()
 			server.appendToLog(in.Entries[1:])
