@@ -379,10 +379,12 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		server.log[len(server.log)-1].Index == int(in.Entries[0].Index) {
 		// Received append entry with the same entry as the last log entry
 		if len(in.Entries) > 1 {
+			fmt.Println("resetiramo 1")
 			server.resetElectionTimer()
 			server.appendToLog(in.Entries[1:])
 			server.commitEntriesOnFollower(int(in.LeaderCommit))
 		}
+		fmt.Println("resetiramo 2")
 		server.becomeFollower(in.LeaderAddress)
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
@@ -392,6 +394,7 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
+		fmt.Println("resetiramo 3")
 		server.becomeFollower(in.LeaderAddress)
 		return server.receivedValidAppendEntry(in.Entries, int(in.LeaderCommit)), nil
 	} else {
@@ -457,6 +460,7 @@ func (server *Server) receivedValidAppendEntry(newLogEntries []*sgrpc.LogEntry, 
 
 func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	if len(server.log) > 0 && !server.log[0].Commited {
+		fmt.Println("resetiramo 4")
 		server.becomeFollower(in.LeaderAddress)
 		server.log = server.log[:0]
 		server.appendToLog(in.Entries)
@@ -466,6 +470,7 @@ func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgr
 			Success: true,
 		}, nil
 	}
+	fmt.Println("začnemo electione")
 	server.electionTimeout()
 	// We send back Success: true, because if we send back false it will cause an error, since it will lower next index to -1
 	return &sgrpc.AppendEntryResponse{
@@ -481,6 +486,7 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position+1]
 			server.appendToLog(in.Entries)
+			fmt.Println("resetiramo 5")
 			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
@@ -496,12 +502,14 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 	if position != -1 && in.Entries[0].Commited && (server.log[position].Term > int(in.Entries[0].Term) ||
 		server.log[position].Term == int(in.Entries[0].Term) && server.log[position].Index > int(in.Entries[0].Index)) {
 		//We received append entry that is already in the commited part of the log (our log is newer)
+		fmt.Println("Začnemo electione 2")
 		server.electionTimeout()
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
 			Success: false,
 		}, nil
 	}
+	fmt.Println("resetiramo 4")
 	//We received commited append entry that is not in our log
 	server.becomeFollower(in.LeaderAddress)
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
