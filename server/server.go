@@ -737,7 +737,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
 		if err != nil {
-			fmt.Println(err)
+			panic(err)
 			server.logCorrectionLock[serverIndex] = false
 		} else {
 			server.heartbeatMutex.Lock()
@@ -776,7 +776,7 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
 	if err != nil {
-		fmt.Println(err)
+		panic(err)
 		server.logCorrectionLock[serverIndex] = false
 	} else {
 		server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication,
