@@ -369,13 +369,13 @@ func (server *Server) initializeNextIndex() {
 
 // Receive and respond to AppendEntry
 
-func testTime(start time.Time) {
-	fmt.Println(time.Now(), " AppendEntry took ", time.Since(start))
+func (server *Server) testTime(start time.Time) {
+	fmt.Println(time.Now(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex)
 }
 
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	start := time.Now()
-	defer testTime(start)
+	defer server.testTime(start)
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
