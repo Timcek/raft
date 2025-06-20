@@ -381,7 +381,7 @@ func (server *Server) initializeNextIndex() {
 }
 
 func (server *Server) testTime(start time.Time) {
-	fmt.Println(time.Now(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex)
+	server.writeToFile(fmt.Sprintf(time.Now().String(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex))
 }
 
 // Receive and respond to AppendEntry
