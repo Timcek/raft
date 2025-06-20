@@ -59,6 +59,7 @@ type Server struct {
 	appendEntryMutex   sync.Mutex
 	appendToLogMutex   sync.Mutex
 	commitEntriesMutex sync.Mutex
+	clientRequestMutex sync.Mutex
 
 	//volatile state on every server
 	commitIndex int
@@ -696,7 +697,9 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	}}
 	logPosition := server.appendToLog(newLog)
 	// Increase the number of logs replicated on this server
+	server.clientRequestMutex.Lock()
 	server.nextIndex[server.serverAddressIndex]++
+	server.clientRequestMutex.Unlock()
 
 	// server.resetHeartbeat()
 	// server.sendAppendEntries()
