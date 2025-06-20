@@ -783,7 +783,7 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
 	end := time.Now()
 	elapsed := end.Sub(start)
-	fmt.Println("Append entry time: ", elapsed)
+	fmt.Println(time.Now(), " Append entry time: ", elapsed)
 	if err != nil {
 		fmt.Println(err)
 		server.logCorrectionLock[serverIndex] = false
