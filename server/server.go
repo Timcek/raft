@@ -20,7 +20,7 @@ const FOLLOWER = 2
 const CANDIDATE = 3
 
 // This means the number of milliseconds
-const electionTimeoutTime = 3000
+const electionTimeoutTime = 500
 
 const numOfEntriesInAppendEntry = 1000
 
