@@ -124,7 +124,7 @@ func (server *Server) triggerSendingAppendEntries() {
 			}
 			if !server.logCorrectionLock[index] && server.nextIndex[server.serverAddressIndex]-nextIndex != 0 {
 				server.logCorrectionLock[index] = true
-				go server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
+				server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -381,7 +381,7 @@ func (server *Server) initializeNextIndex() {
 }
 
 func (server *Server) testTime(start time.Time) {
-	server.writeToFile(fmt.Sprintf(time.Now().String(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex))
+	fmt.Println(time.Now().String(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex)
 }
 
 // Receive and respond to AppendEntry
