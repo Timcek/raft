@@ -146,6 +146,7 @@ func (server *Server) electionTimeout() {
 // Begin election process, send votes, wait for responses and change server state based on vote result.
 
 func (server *Server) beginElection() {
+	fmt.Println(time.Now(), "Begin election")
 	server.increaseTerm()
 	server.inElection = true
 	server.resetVoteCountAndVoteForYourself()
@@ -367,7 +368,7 @@ func (server *Server) initializeNextIndex() {
 // Receive and respond to AppendEntry
 
 func testTime(start time.Time) {
-	fmt.Println("AppendEntry took ", time.Since(start))
+	fmt.Println(time.Now(), " AppendEntry took ", time.Since(start))
 }
 
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
