@@ -22,7 +22,7 @@ const CANDIDATE = 3
 // This means the number of milliseconds
 const electionTimeoutTime = 500
 
-const numOfEntriesInAppendEntry = 10
+const numOfEntriesInAppendEntry = 100
 
 type Server struct {
 	sgrpc.UnimplementedServerServiceServer
