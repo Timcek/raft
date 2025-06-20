@@ -801,12 +801,15 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+			fmt.Println("prvič ", server.nextIndex)
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
 		} else {
+			fmt.Println("prvič1 ", server.nextIndex)
 			server.logCorrectionLock[serverIndex] = false
 		}
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term
+		fmt.Println("drugič")
 		server.becomeCandidate()
 		server.changeTerm(int(appendEntryResponse.Term), false)
 		server.logCorrectionLock[serverIndex] = false
@@ -814,8 +817,10 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
+			fmt.Println("tretjič ", server.nextIndex)
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
 		} else {
+			fmt.Println("tretjič1 ", server.nextIndex)
 			server.logCorrectionLock[serverIndex] = false
 		}
 	}
