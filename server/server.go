@@ -686,6 +686,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 
 	//server.logReplicationMutex.Lock()
 	//fmt.Println(in.Message)
+	start := time.Now()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
 		lastLogIndex = 0
@@ -701,13 +702,15 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 	server.clientRequestMutex.Unlock()
 
+	elapsed := time.Since(start)
+	fmt.Println("last log, insert, increase next index ", elapsed)
 	// server.resetHeartbeat()
 	// server.sendAppendEntries()
 	//fmt.Println(in.Message)
 	//server.logReplicationMutex.Unlock()
 
 	for !server.log[logPosition].Commited {
-		time.Sleep(time.Millisecond * 10)
+		time.Sleep(time.Millisecond * 1)
 	}
 
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
