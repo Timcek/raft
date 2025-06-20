@@ -22,7 +22,7 @@ const CANDIDATE = 3
 // This means the number of milliseconds
 const electionTimeoutTime = 500
 
-const numOfEntriesInAppendEntry = 100
+const numOfEntriesInAppendEntry = 10
 
 type Server struct {
 	sgrpc.UnimplementedServerServiceServer
@@ -368,10 +368,7 @@ func (server *Server) initializeNextIndex() {
 
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	start := time.Now()
-	defer func() {
-		elapsed := time.Since(start)
-		fmt.Println("AppendEntry took ", elapsed)
-	}()
+	defer fmt.Println("AppendEntry took ", time.Since(start))
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
