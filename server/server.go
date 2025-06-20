@@ -147,7 +147,6 @@ func (server *Server) electionTimeout() {
 // Begin election process, send votes, wait for responses and change server state based on vote result.
 
 func (server *Server) beginElection() {
-	fmt.Println(time.Now(), "Begin election")
 	server.increaseTerm()
 	server.inElection = true
 	server.resetVoteCountAndVoteForYourself()
@@ -306,6 +305,7 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string,
 		Entries:       entries,
 		LeaderCommit:  int64(server.commitIndex),
 	}
+	fmt.Println("Entries length: ", len(entries))
 	// serverLogLength represents the address server's log length after appending the message.
 	// This is the length for which the majority replication should be checked for.
 	serverLogLength := server.nextIndex[serverIndex] + len(entries)
@@ -368,13 +368,7 @@ func (server *Server) initializeNextIndex() {
 
 // Receive and respond to AppendEntry
 
-func (server *Server) testTime(start time.Time) {
-	fmt.Println(time.Now(), " AppendEntry took ", time.Since(start), "  ", server.nextIndex)
-}
-
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
-	start := time.Now()
-	defer server.testTime(start)
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
@@ -387,12 +381,10 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		server.log[len(server.log)-1].Index == int(in.Entries[0].Index) {
 		// Received append entry with the same entry as the last log entry
 		if len(in.Entries) > 1 {
-			fmt.Println("resetiramo 1")
 			server.resetElectionTimer()
 			server.appendToLog(in.Entries[1:])
 			server.commitEntriesOnFollower(int(in.LeaderCommit))
 		}
-		fmt.Println("resetiramo 2")
 		server.becomeFollower(in.LeaderAddress)
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
@@ -402,7 +394,6 @@ func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMess
 		(len(server.log) != 0 && (int(in.PrevLogTerm) == server.log[len(server.log)-1].Term && int(in.PrevLogIndex) == server.log[len(server.log)-1].Index)) {
 		// AppendEntry is valid, if previous log term and index equal the last log entry, or they are 0,
 		// which means that this should be the first entry in log
-		fmt.Println("resetiramo 3")
 		server.becomeFollower(in.LeaderAddress)
 		return server.receivedValidAppendEntry(in.Entries, int(in.LeaderCommit)), nil
 	} else {
@@ -468,7 +459,6 @@ func (server *Server) receivedValidAppendEntry(newLogEntries []*sgrpc.LogEntry, 
 
 func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgrpc.AppendEntryMessage, commitIndex int) (*sgrpc.AppendEntryResponse, error) {
 	if len(server.log) > 0 && !server.log[0].Commited {
-		fmt.Println("resetiramo 4")
 		server.becomeFollower(in.LeaderAddress)
 		server.log = server.log[:0]
 		server.appendToLog(in.Entries)
@@ -478,7 +468,6 @@ func (server *Server) receivedFirstLogEntryButCurrentServerLogIsNotEmpty(in *sgr
 			Success: true,
 		}, nil
 	}
-	fmt.Println("začnemo electione")
 	server.electionTimeout()
 	// We send back Success: true, because if we send back false it will cause an error, since it will lower next index to -1
 	return &sgrpc.AppendEntryResponse{
@@ -494,7 +483,6 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 		if server.log[position].Term == int(in.PrevLogTerm) && server.log[position].Index == int(in.PrevLogIndex) {
 			server.log = server.log[:position+1]
 			server.appendToLog(in.Entries)
-			fmt.Println("resetiramo 5")
 			server.becomeFollower(in.LeaderAddress)
 			server.commitEntriesOnFollower(commitIndex)
 			return &sgrpc.AppendEntryResponse{
@@ -510,14 +498,12 @@ func (server *Server) findLogPositionAndInsertLogEntry(in *sgrpc.AppendEntryMess
 	if position != -1 && in.Entries[0].Commited && (server.log[position].Term > int(in.Entries[0].Term) ||
 		server.log[position].Term == int(in.Entries[0].Term) && server.log[position].Index > int(in.Entries[0].Index)) {
 		//We received append entry that is already in the commited part of the log (our log is newer)
-		fmt.Println("Začnemo electione 2")
 		server.electionTimeout()
 		return &sgrpc.AppendEntryResponse{
 			Term:    int64(server.currentTerm),
 			Success: false,
 		}, nil
 	}
-	fmt.Println("resetiramo 4")
 	//We received commited append entry that is not in our log
 	server.becomeFollower(in.LeaderAddress)
 	// We can not insert log entry into log, because the last log entries do not match with leaders. Leader has to send
@@ -544,7 +530,6 @@ func (server *Server) commitEntriesOnFollower(commitIndex int) {
 
 func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMessage) (*sgrpc.RequestVoteResponse, error) {
 	server.replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(int(in.Term))
-	fmt.Println("Received vote request")
 	// Retrieve servers last log message (if the log is empty, the term and index should be 0, which they are by default when we create logMessage)
 	var lastLog log.Message
 	if len(server.log) > 0 {
@@ -685,7 +670,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 
 	//server.logReplicationMutex.Lock()
 	//fmt.Println(in.Message)
-	start := time.Now()
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
 		lastLogIndex = 0
@@ -701,8 +685,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 	server.clientRequestMutex.Unlock()
 
-	elapsed := time.Since(start)
-	fmt.Println("last log, insert, increase next index ", elapsed)
 	// server.resetHeartbeat()
 	// server.sendAppendEntries()
 	//fmt.Println(in.Message)
@@ -711,8 +693,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	for !server.log[logPosition].Commited {
 		time.Sleep(time.Millisecond * 1)
 	}
-	elapsed = time.Since(start)
-	fmt.Println("client request took", elapsed)
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
 }
 
@@ -786,11 +766,7 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 	defer cancel()
 
-	start := time.Now()
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
-	end := time.Now()
-	elapsed := end.Sub(start)
-	fmt.Println(time.Now(), " Append entry time: ", elapsed)
 	if err != nil {
 		fmt.Println(err)
 		server.logCorrectionLock[serverIndex] = false
@@ -807,15 +783,12 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
-			fmt.Println("prvič ", server.nextIndex)
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
 		} else {
-			fmt.Println("prvič1 ", server.nextIndex)
 			server.logCorrectionLock[serverIndex] = false
 		}
 	} else if !appendEntryResponse.Success && int(appendEntryResponse.Term) > server.currentTerm {
 		// We receive success=false, because the other server has higher term
-		fmt.Println("drugič")
 		server.becomeCandidate()
 		server.changeTerm(int(appendEntryResponse.Term), false)
 		server.logCorrectionLock[serverIndex] = false
@@ -823,10 +796,8 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
-			fmt.Println("tretjič ", server.nextIndex)
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
 		} else {
-			fmt.Println("tretjič1 ", server.nextIndex)
 			server.logCorrectionLock[serverIndex] = false
 		}
 	}
