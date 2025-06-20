@@ -99,7 +99,7 @@ func CreateServer(addressIndex int, addresses []string) {
 	}
 	server.file = file
 
-	//go server.triggerSendingAppendEntries()
+	go server.triggerSendingAppendEntries()
 
 	// Register grpc methods
 	grpcServer := grpc.NewServer()
@@ -248,7 +248,7 @@ func (server *Server) receivesDeniedVote(term int) {
 // Leader heartbeat management
 
 func (server *Server) manageHeartbeat() {
-	server.heartbeatTimer = time.NewTimer(time.Millisecond * 10)
+	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
@@ -270,7 +270,7 @@ func (server *Server) resetHeartbeat() {
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
 	} else {
-		server.heartbeatTimer.Reset(time.Millisecond * 10)
+		server.heartbeatTimer.Reset(time.Millisecond * (electionTimeoutTime / 4))
 	}
 }
 
