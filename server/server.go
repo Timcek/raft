@@ -737,7 +737,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
 		if err != nil {
-			panic(err)
+			fmt.Println(err)
 			server.logCorrectionLock[serverIndex] = false
 		} else {
 			server.heartbeatMutex.Lock()
@@ -774,9 +774,13 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
 	defer cancel()
 
+	start := time.Now()
 	appendEntryResponse, err := grpcClient.AppendEntry(contextServer, appendEntryMessage)
+	end := time.Now()
+	elapsed := end.Sub(start)
+	fmt.Println("Append entry time: ", elapsed)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
 		server.logCorrectionLock[serverIndex] = false
 	} else {
 		server.processAppendEntryResponse(appendEntryResponse, serverIndex, logLengthToCheckForMajorityReplication,
