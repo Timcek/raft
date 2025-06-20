@@ -179,7 +179,7 @@ func (server *Server) issueVoteRequestsToOtherServers() {
 
 			grpcClient := sgrpc.NewServerServiceClient(conn)
 
-			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+			contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 			defer cancel()
 
 			lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
@@ -732,7 +732,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 
 		grpcClient := sgrpc.NewServerServiceClient(conn)
 
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 		defer cancel()
 
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
@@ -771,7 +771,7 @@ func (server *Server) sendAppendEntryMessage(address string, appendEntryMessage 
 	}
 	defer conn.Close()
 	grpcClient := sgrpc.NewServerServiceClient(conn)
-	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
+	contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
 	defer cancel()
 
 	start := time.Now()
