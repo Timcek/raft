@@ -797,7 +797,8 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 	if appendEntryResponse.Success && server.nextIndex[serverIndex] < server.nextIndex[server.serverAddressIndex] {
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
-		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
+		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] &&
+			server.nextIndex[server.serverAddressIndex]-server.nextIndex[serverIndex] > 50 {
 			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
