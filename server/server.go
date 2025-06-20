@@ -20,7 +20,7 @@ const FOLLOWER = 2
 const CANDIDATE = 3
 
 // This means the number of milliseconds
-const electionTimeoutTime = 500
+const electionTimeoutTime = 3000
 
 const numOfEntriesInAppendEntry = 10
 
@@ -366,9 +366,13 @@ func (server *Server) initializeNextIndex() {
 
 // Receive and respond to AppendEntry
 
+func testTime(start time.Time) {
+	fmt.Println("AppendEntry took ", time.Since(start))
+}
+
 func (server *Server) AppendEntry(ctx context.Context, in *sgrpc.AppendEntryMessage) (*sgrpc.AppendEntryResponse, error) {
 	start := time.Now()
-	defer fmt.Println("AppendEntry took ", time.Since(start))
+	defer testTime(start)
 	if int(in.Term) < server.currentTerm {
 		return server.receivesHeartbeatOrAppendEntryWithStaleTerm(), nil
 	}
