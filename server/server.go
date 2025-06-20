@@ -127,7 +127,7 @@ func (server *Server) triggerSendingAppendEntries() {
 				go server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
