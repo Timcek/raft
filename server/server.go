@@ -122,7 +122,7 @@ func (server *Server) triggerSendingAppendEntries() {
 			if index == server.serverAddressIndex {
 				continue
 			}
-			if server.nextIndex[server.serverAddressIndex]-nextIndex > 100 {
+			if server.nextIndex[server.serverAddressIndex]-nextIndex > 100 && !server.logCorrectionLock[index] {
 				server.logCorrectionLock[index] = true
 				server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
 			}
