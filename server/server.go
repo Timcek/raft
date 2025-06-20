@@ -118,16 +118,16 @@ func CreateServer(addressIndex int, addresses []string) {
 
 func (server *Server) triggerSendingAppendEntries() {
 	for {
-		for index, _ := range server.nextIndex {
+		for index, nextIndex := range server.nextIndex {
 			if index == server.serverAddressIndex {
 				continue
 			}
-			if !server.logCorrectionLock[index] {
+			if !server.logCorrectionLock[index] && server.nextIndex[server.serverAddressIndex]-nextIndex != 0 {
 				server.logCorrectionLock[index] = true
-				server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
+				go server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
