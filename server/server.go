@@ -528,7 +528,7 @@ func (server *Server) commitEntriesOnFollower(commitIndex int) {
 
 func (server *Server) RequestVote(ctx context.Context, in *sgrpc.RequestVoteMessage) (*sgrpc.RequestVoteResponse, error) {
 	server.replaceServersCurrentTermIfReceivedTermInRequestVoteIsHigher(int(in.Term))
-
+	fmt.Println("Received vote request")
 	// Retrieve servers last log message (if the log is empty, the term and index should be 0, which they are by default when we create logMessage)
 	var lastLog log.Message
 	if len(server.log) > 0 {
@@ -684,7 +684,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 
 	// server.resetHeartbeat()
 	// server.sendAppendEntries()
-	fmt.Println(in.Message)
+	//fmt.Println(in.Message)
 	//server.logReplicationMutex.Unlock()
 
 	for !server.log[logPosition].Commited {
