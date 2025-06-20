@@ -712,7 +712,8 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	for !server.log[logPosition].Commited {
 		time.Sleep(time.Millisecond * 1)
 	}
-
+	elapsed = time.Since(start)
+	fmt.Println("client request took", elapsed)
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
 }
 
