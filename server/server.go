@@ -99,6 +99,8 @@ func CreateServer(addressIndex int, addresses []string) {
 	}
 	server.file = file
 
+	go server.triggerSendingAppendEntries()
+
 	// Register grpc methods
 	grpcServer := grpc.NewServer()
 	sgrpc.RegisterServerServiceServer(grpcServer, &server)
@@ -111,6 +113,21 @@ func CreateServer(addressIndex int, addresses []string) {
 	// začnemo s streženjem
 	if err := grpcServer.Serve(listener); err != nil {
 		panic(err)
+	}
+}
+
+func (server *Server) triggerSendingAppendEntries() {
+	for {
+		for index, nextIndex := range server.nextIndex {
+			if index == server.serverAddressIndex {
+				continue
+			}
+			if server.nextIndex[server.serverAddressIndex]-nextIndex > 100 {
+				server.logCorrectionLock[index] = true
+				server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -231,7 +248,7 @@ func (server *Server) receivesDeniedVote(term int) {
 // Leader heartbeat management
 
 func (server *Server) manageHeartbeat() {
-	server.heartbeatTimer = time.NewTimer(time.Millisecond * 10)
+	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
@@ -253,7 +270,7 @@ func (server *Server) resetHeartbeat() {
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
 	} else {
-		server.heartbeatTimer.Reset(time.Millisecond * 10)
+		server.heartbeatTimer.Reset(time.Millisecond * (electionTimeoutTime / 4))
 	}
 }
 
@@ -265,7 +282,7 @@ func (server *Server) heartbeatTimeout() {
 		}
 		if server.nextIndex[index] != server.nextIndex[server.serverAddressIndex] {
 			server.logCorrectionLock[index] = true
-			go server.prepareAndSendAppendEntry(index, address, 0)
+			go server.prepareAndSendAppendEntry(index, address)
 		} else {
 			server.logCorrectionLock[index] = true
 			server.prepareAndSendHeartbeat(lastLogIndex, lastLogTerm, address, index)
@@ -273,7 +290,7 @@ func (server *Server) heartbeatTimeout() {
 	}
 }
 
-func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string, testIndex int) {
+func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string) {
 	prevLogTerm, prevLogIndex := server.retrievePrevLogIndexAndTerm(server.nextIndex[serverIndex])
 
 	var entries []*sgrpc.LogEntry
@@ -310,9 +327,6 @@ func (server *Server) prepareAndSendAppendEntry(serverIndex int, address string,
 	// This is the length for which the majority replication should be checked for.
 	serverLogLength := server.nextIndex[serverIndex] + len(entries)
 	server.sendAppendEntryMessage(address, &message, serverIndex, serverLogLength)
-	if testIndex == 0 {
-		server.writeToFile("\nFirst append entry just finished ---- serverIndex: \n" + strconv.Itoa(serverIndex))
-	}
 }
 
 func (server *Server) prepareAndSendHeartbeat(lastLogIndex int64, lastLogTerm int64, address string, serverIndex int) {
@@ -706,7 +720,7 @@ func (server *Server) sendAppendEntries() {
 		// then we can send append entries, otherwise they will be sent with heartbeats
 		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
 			server.logCorrectionLock[serverIndex] = true
-			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[server.serverAddressIndex], 1)
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[server.serverAddressIndex])
 		}
 	}
 	server.appendEntryMutex.Unlock()
@@ -749,7 +763,7 @@ func (server *Server) processHeartbeatResponse(response *sgrpc.AppendEntryRespon
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
 			// We use WaitGroup because we are already in go routine from sendHeartbeatMessage
-			server.prepareAndSendAppendEntry(serverIndex, address, 1)
+			server.prepareAndSendAppendEntry(serverIndex, address)
 		}
 	}
 	server.logCorrectionLock[serverIndex] = false
@@ -783,7 +797,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		server.nextIndex[serverIndex] += messageEntriesLength
 		server.checkIfAppendEntryIsReplicatedOnMajorityOfServers(logLengthToCheckForMajorityReplication)
 		if server.serverState == LEADER && server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
-			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
 		}
@@ -796,7 +810,7 @@ func (server *Server) processAppendEntryResponse(appendEntryResponse *sgrpc.Appe
 		// We receive success=false, because this leader has different log than the follower, to which the appendEntry was sent.
 		server.nextIndex[serverIndex]--
 		if server.serverState == LEADER {
-			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex], 1)
+			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[serverIndex])
 		} else {
 			server.logCorrectionLock[serverIndex] = false
 		}
