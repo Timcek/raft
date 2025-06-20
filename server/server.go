@@ -232,7 +232,7 @@ func (server *Server) receivesDeniedVote(term int) {
 // Leader heartbeat management
 
 func (server *Server) manageHeartbeat() {
-	server.heartbeatTimer = time.NewTimer(time.Millisecond * (electionTimeoutTime / 4))
+	server.heartbeatTimer = time.NewTimer(time.Millisecond * 10)
 	go func() {
 		for true {
 			<-server.heartbeatTimer.C
@@ -254,13 +254,12 @@ func (server *Server) resetHeartbeat() {
 	if server.heartbeatTimer == nil {
 		server.manageHeartbeat()
 	} else {
-		server.heartbeatTimer.Reset(time.Millisecond * (electionTimeoutTime / 4))
+		server.heartbeatTimer.Reset(time.Millisecond * 10)
 	}
 }
 
 func (server *Server) heartbeatTimeout() {
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	fmt.Println(time.Now(), " Heartbeat timeout ", server.logCorrectionLock)
 	for index, address := range server.serverAddresses {
 		if index == server.serverAddressIndex || server.logCorrectionLock[index] {
 			continue
