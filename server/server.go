@@ -259,7 +259,7 @@ func (server *Server) resetHeartbeat() {
 
 func (server *Server) heartbeatTimeout() {
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
-	fmt.Println(time.Now(), " Heartbeat timeout")
+	fmt.Println(time.Now(), " Heartbeat timeout ", server.logCorrectionLock)
 	for index, address := range server.serverAddresses {
 		if index == server.serverAddressIndex || server.logCorrectionLock[index] {
 			continue
