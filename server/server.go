@@ -22,7 +22,7 @@ const CANDIDATE = 3
 // This means the number of milliseconds
 const electionTimeoutTime = 500
 
-const numOfEntriesInAppendEntry = 2000
+const numOfEntriesInAppendEntry = 500
 
 type Server struct {
 	sgrpc.UnimplementedServerServiceServer
@@ -118,13 +118,15 @@ func CreateServer(addressIndex int, addresses []string) {
 
 func (server *Server) triggerSendingAppendEntries() {
 	for {
-		for index, nextIndex := range server.nextIndex {
-			if index == server.serverAddressIndex {
-				continue
-			}
-			if !server.logCorrectionLock[index] && server.nextIndex[server.serverAddressIndex]-nextIndex != 0 {
-				server.logCorrectionLock[index] = true
-				server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
+		if server.serverState == LEADER {
+			for index, nextIndex := range server.nextIndex {
+				if index == server.serverAddressIndex {
+					continue
+				}
+				if !server.logCorrectionLock[index] && server.nextIndex[server.serverAddressIndex]-nextIndex != 0 {
+					server.logCorrectionLock[index] = true
+					go server.prepareAndSendAppendEntry(index, server.serverAddresses[index])
+				}
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -700,33 +702,12 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	server.nextIndex[server.serverAddressIndex]++
 	server.clientRequestMutex.Unlock()
 
-	// server.resetHeartbeat()
-	// server.sendAppendEntries()
-	//fmt.Println(in.Message)
-	//server.logReplicationMutex.Unlock()
-
 	for !server.log[logPosition].Commited {
 		time.Sleep(time.Millisecond * 1)
 	}
 	elapsed := time.Since(start)
 	fmt.Println(in.Message, " request process time ", elapsed)
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
-}
-
-func (server *Server) sendAppendEntries() {
-	server.appendEntryMutex.Lock()
-	for serverIndex, _ := range server.nextIndex {
-		if serverIndex == server.serverAddressIndex || server.logCorrectionLock[serverIndex] {
-			continue
-		}
-		// If the number of log entries on the current server is for one bigger than the other server,
-		// then we can send append entries, otherwise they will be sent with heartbeats
-		if server.nextIndex[serverIndex] != server.nextIndex[server.serverAddressIndex] {
-			server.logCorrectionLock[serverIndex] = true
-			server.prepareAndSendAppendEntry(serverIndex, server.serverAddresses[server.serverAddressIndex])
-		}
-	}
-	server.appendEntryMutex.Unlock()
 }
 
 // Messages sending
@@ -741,7 +722,7 @@ func (server *Server) sendHeartbeatMessage(address string, heartbeatMessage *sgr
 
 		grpcClient := sgrpc.NewServerServiceClient(conn)
 
-		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/2))
+		contextServer, cancel := context.WithTimeout(context.Background(), time.Millisecond*(electionTimeoutTime/8))
 		defer cancel()
 
 		heartbeatResponse, err := grpcClient.AppendEntry(contextServer, heartbeatMessage)
