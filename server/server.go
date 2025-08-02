@@ -684,9 +684,6 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 			LeaderAddress: server.leaderAddress,
 		}, nil
 	}
-	start := time.Now()
-	//server.logReplicationMutex.Lock()
-	//fmt.Println(in.Message)
 	lastLogIndex, lastLogTerm := server.retrieveLastLogIndexAndTerm()
 	if int(lastLogTerm) != server.currentTerm {
 		lastLogIndex = 0
@@ -705,8 +702,7 @@ func (server *Server) ClientRequest(ctx context.Context, in *sgrpc.ClientRequest
 	for !server.log[logPosition].Commited {
 		time.Sleep(time.Millisecond * 1)
 	}
-	elapsed := time.Since(start)
-	fmt.Println(in.Message, " request process time ", elapsed)
+
 	return &sgrpc.ClientRequestResponse{Success: true}, nil
 }
 
