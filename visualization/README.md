@@ -1,34 +1,3 @@
-# Stopping and restarting processes
-To pause one server use the following command:
-```
-pkill -STOP -P <process_id>
-```
-
-To resume one server use the following command:
-```
-pkill -CONT -P <process_id>
-```
-
-To kill a server use:
-```
-pkill -P <process_id>
-```
-
-To run the cluster just use the following command in raft folder:
-```
-go run main.go
-```
-
-To watch a log file use the following command:
-```
-watch -n 1 -d tail output127.0.0.1\:<server_port>.txt
-```
-
-To specify custom configuration file to program use the following command:
-```
-go run main.go <configuration_file>
-```
-
 # Visualization setup
 
 Checkout the visualization branch.
@@ -55,14 +24,15 @@ start working. This happens because for some reason Docker takes some time to cr
 If you want to create a custom visualization configuration you need to select a JSON file inside "Izberi datoteko" field and 
 press "Začni simulacijo". Below is an example of a JSON file for 5 servers configuration. Every configuration must satisfy
 the next conditions:
-- At the top of the file there must be a properties for number of servers and the next term. The nextTerm value should represent
+- At the top of the file there must beproperties for number of servers and the next term. The nextTerm value should represent
 the upcoming term number. For example, if the highest term in serverLogs is 5, then nextTerm should be set to 6 or higher.
-- The serverLogs property must be an array of arrays. Each inner array represents the log entries for e server. Each 
+- serverLogs property must be an array of arrays. Each inner array represents the log entries for a server. Each 
 log entry should be an object with the following properties:
   - Commited: indicates whether the log entry is commited. 
   - Term: Specifies the term in which the entry was created. 
   - Index: Should start at 1 and reset to 1 every time the term increases.
 
+An example of a configuration file:
 ```
 {
   "numberOfServers": 5,
@@ -127,3 +97,29 @@ log entry should be an object with the following properties:
 - Press S to stop the simulation
 - Press R to resume the simulation
 - Press C to trigger default client request
+
+# Stopping and restarting processes
+To pause one server use the following command:
+```
+pkill -STOP -P <process_id>
+```
+
+To resume one server use the following command:
+```
+pkill -CONT -P <process_id>
+```
+
+To kill a server use:
+```
+pkill -P <process_id>
+```
+
+To watch a log file use the following command:
+```
+watch -n 1 -d tail output127.0.0.1\:<server_port>.txt
+```
+
+To specify custom configuration file to program use the following command:
+```
+go run main.go <configuration_file>
+```
