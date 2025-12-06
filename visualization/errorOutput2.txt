@@ -1,0 +1,8 @@
+panic: listen tcp 192.168.2.152:5000: bind: cannot assign requested address
+
+goroutine 1 [running]:
+raftImplementation/raft/server.CreateServer(0x2, {0xc000206380, 0x5, 0x8})
+	/home/rezelj/Moje_datoteke/vseLinux/raft/server/server.go:96 +0x391
+main.main()
+	/home/rezelj/Moje_datoteke/vseLinux/raft/runServer/runServer.go:32 +0x125
+exit status 2

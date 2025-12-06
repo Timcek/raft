@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Raft Scope</title>
+    <link href="bootstrap-3.1.1/css/bootstrap.min.css" rel="stylesheet">
+    <link href="bootstrap-slider/css/bootstrap-slider.css" rel="stylesheet">
+    <script src="jquery/jquery.min.js"></script>
+    <script src="bootstrap-3.1.1/js/bootstrap.min.js"></script>
+    <script src="bootstrap-slider/js/bootstrap-slider.js"></script>
+    <script src="bootstrap-contextmenu/bootstrap-contextmenu.js"></script>
+    <script src="util.js"></script>
+    <script src="raft.js"></script>
+    <script src="state.js"></script>
+    <link href="style.css" rel="stylesheet">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 40px;
+      }
+
+      input[type="file"] {
+        display: block;
+        width: 50%;
+        margin: 0 10px;
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        min-width: 460px;
+      }
+    </style>
+  </head>
+  <body>
+  <form class="upload container" style="margin-top: 30px; margin-bottom: 50px">
+    <div style="display: flex; justify-content: center">
+      <input type="file" name="uploadFile" accept=".json" />
+      <input type="submit" class="submit-btn" style="width: auto" value="Začni simulacijo"/>
+    </div>
+  </form>
+  <script src="script.js"></script>
+    <div class="container">
+      <div class="row" style="margin-top: 20px; display: flex; justify-content: center">
+        <svg xmlns="http://www.w3.org/2000/svg" version="1.1" style="border: 0px solid black" width="745" height="400">
+          <defs>
+            <marker id="TriangleOutM" orient="auto" refX="0.0" refY="0.0" style="overflow:visible">
+              <path d="M 5.77,0.0 L -2.88,5.0 L -2.88,-5.0 L 5.77,0.0 z" transform="scale(0.4)" />
+            </marker>
+            <marker id="TriangleOutS-RequestVote" orient="auto" refX="0.0" refY="0.0" style="overflow:visible">
+              <path d="M 5.77,0.0 L -2.88,5.0 L -2.88,-5.0 L 5.77,0.0 z" transform="scale(0.3)" class="message RequestVote" />
+            </marker>
+            <marker id="TriangleOutS-AppendEntries" orient="auto" refX="0.0" refY="0.0" style="overflow:visible">
+              <path d="M 5.77,0.0 L -2.88,5.0 L -2.88,-5.0 L 5.77,0.0 z" transform="scale(0.3)" class="message AppendEntries" />
+            </marker>
+          </defs>
+          <circle id="ring" />
+          <g id="pause" class="resumed">
+            <rect width="1" height="3" x="-1.25" y="-1.5" />
+            <rect width="1" height="3" x=".25"   y="-1.5" />
+          </g>
+          <g id="messages"></g>
+          <g id="servers"></g>
+          <g class="logs"></g>
+        </svg>
+      </div>
+      <div class="row" style="margin-top: 20px; display: flex; justify-content: center">
+        <a id="time-button" href="#"><span id="time-icon" class="glyphicon glyphicon-time" style="font-size: 24pt; vertical-align: middle" data-toggle="tooltip" title="Timeline; click to pause/play"></span></a>
+        &nbsp;&nbsp;
+        <input id="time" style="width: 650px" data-slider-id='timeSlider' type="text" data-slider-min="0" data-slider-max="1000" data-slider-step="1" data-slider-value="0" />
+      </div>
+      <div class="row" style="margin-top: 20px; display: flex; justify-content: center">
+        <span id="speed-icon" class="glyphicon glyphicon-dashboard" style="font-size: 24pt; vertical-align: middle" data-toggle="tooltip" title="Simulation speed"></span>
+        &nbsp;&nbsp;
+        <input id="speed" style="width: 650px"  data-slider-id='speedSlider' type="text" data-slider-min="0" data-slider-max="3" data-slider-step=".01" data-slider-value="2" />
+      </div>
+    </div>
+
+    <div id="modal-details" class="modal" tabindex="-1" data-keyboard="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+            <h4 class="modal-title"></h4>
+          </div>
+          <div class="modal-body">
+          </div>
+          <div class="modal-footer">
+          </div>
+        </div><!-- /.modal-content -->
+      </div><!-- /.modal-dialog -->
+    </div><!-- /.modal -->
+
+    <div id="modal-help" class="modal" tabindex="-1" data-keyboard="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+            <h4 class="modal-title">Keyboard shortcuts</h4>
+          </div>
+          <div class="modal-body">
+            <table class="table">
+              <tr>
+                <td><kbd>&nbsp;</kbd> / <kbd>.</kbd></td>
+                <td>Pause/unpause</td>
+              </tr>
+              <tr>
+                <td><kbd>?</kbd></td>
+                <td>Help</td>
+              </tr>
+              <tr>
+                <td><kbd>C</kbd></td>
+                <td>Submit client request to leader of highest term, if any</td>
+              </tr>
+              <tr>
+                <td><kbd>R</kbd></td>
+                <td>Restart leader of highest term, if any</td>
+              </tr>
+              <tr>
+                <td><kbd>T</kbd></td>
+                <td>Adjust election timers to avoid a split vote</td>
+              </tr>
+              <tr>
+                <td><kbd>A</kbd></td>
+                <td>Align election timers to encourage a split vote</td>
+              </tr>
+              <tr>
+                <td><kbd>L</kbd></td>
+                <td>Set up log replication start scenario</td>
+              </tr>
+              <tr>
+                <td><kbd>B</kbd></td>
+                <td>Resume all servers</td>
+              </tr>
+              <tr>
+                <td><kbd>F</kbd></td>
+                <td>Fork playback, discarding future</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-section" class="modal" tabindex="-1" data-keyboard="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+            <div class="text-center" style="padding: 200px 0">
+              <h1></h1>
+              <h2></h2>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="context-menu">
+      <ul class="dropdown-menu" role="menu">
+      </ul>
+    </div>
+
+    <div class="container-btn">
+      <form class="form" id="clientRequestForm">
+        <h1 class="form-title">Pošlji zahtevek klienta</h1>
+
+        <div class="input-group">
+          <label for="clientRequest" class="label">Sporočilo:</label>
+          <input
+                  type="text"
+                  id="clientRequest"
+                  name="clientRequest"
+                  class="input"
+                  placeholder="Vnesite sporočilo vašega zahtevka"
+                  required
+          />
+        </div>
+
+        <button type="button" class="submit-btn" id="clientRequestButton">Pošlji</button>
+      </form>
+    </div>
+
+    <style>
+      .container-btn {
+        width: 100%;
+        max-width: 400px;
+        margin-top: 30px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      h1 {
+        margin-top: 0
+      }
+
+      .form {
+        background: white;
+        padding: 40px;
+        border-radius: 12px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .form-title {
+        color: #333;
+        font-size: 28px;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 32px;
+        letter-spacing: -0.5px;
+      }
+
+      .input-group {
+        margin-bottom: 24px;
+        width: 100%;
+      }
+
+      .label {
+        display: block;
+        color: #555;
+        font-size: 16px;
+        font-weight: 500;
+        margin-bottom: 8px;
+        float: left;
+      }
+
+      .input {
+        width: 100%;
+        padding: 16px;
+        border: 2px solid #e1e5e9;
+        border-radius: 8px;
+        font-size: 16px;
+        transition: all 0.3s ease;
+        background-color: #fafbfc;
+      }
+
+      .input:focus {
+        outline: none;
+        border-color: #667eea;
+        background-color: white;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      }
+
+      .input::placeholder {
+        color: #9ca3af;
+      }
+
+      .submit-btn {
+        width: 100%;
+        padding: 16px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+    </style>
+  </body>
+</html>

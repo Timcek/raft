@@ -1,0 +1,6 @@
+[submodule "visualization/viz/bootstrap-slider"]
+	path = visualization/viz/bootstrap-slider
+	url = https://github.com/seiyria/bootstrap-slider.git
+[submodule "visualization/viz/bootstrap-contextmenu"]
+	path = visualization/viz/bootstrap-contextmenu
+	url = https://github.com/sydcanem/bootstrap-contextmenu.git
